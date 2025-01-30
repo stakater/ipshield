@@ -29,6 +29,9 @@ import (
 
 const namespace = "ipshield-operator-system"
 
+// TODO add e2e tests
+// Take look at https://github.com/cloudnative-pg/cloudnative-pg/tree/main/tests/e2e
+
 var _ = Describe("controller", Ordered, func() {
 	BeforeAll(func() {
 		By("installing prometheus operator")

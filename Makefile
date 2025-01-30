@@ -29,6 +29,7 @@ BUNDLE_METADATA_OPTS ?= $(BUNDLE_CHANNELS) $(BUNDLE_DEFAULT_CHANNEL)
 #
 # For example, running 'make bundle-build bundle-push catalog-build catalog-push' will build and push both
 # <docker-repo>/ipshield-bundle:$VERSION and <docker-repo>/ipshield-catalog:$VERSION.-operator
+# TODO push to Stakater Git Docker Repo
 DOCKER_REPO ?= stakaterdockerhubpullroot
 IMAGE_TAG_BASE ?= $(DOCKER_REPO)/ipshield-operator
 

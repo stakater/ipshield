@@ -14,11 +14,21 @@ metadata:
             },
             "name": "routewhitelist-sample"
           },
-          "spec": null
+          "spec": {
+            "ipRanges": [
+              "10.100.110.11",
+              "10.100.110.12"
+            ],
+            "labelSelector": {
+              "matchLabels": {
+                "app": "ip-test"
+              }
+            }
+          }
         }
       ]
     capabilities: Basic Install
-    createdAt: "2025-01-30T10:01:04Z"
+    createdAt: "2025-01-30T11:01:22Z"
     operators.operatorframework.io/builder: operator-sdk-v1.36.1
     operators.operatorframework.io/project_layout: go.kubebuilder.io/v4
   name: ipshield-operator.v0.0.1
@@ -67,6 +77,15 @@ spec:
           - get
           - patch
           - update
+        - apiGroups:
+          - route.openshift.io
+          resources:
+          - routes
+          verbs:
+          - get
+          - list
+          - update
+          - watch
         - apiGroups:
           - authentication.k8s.io
           resources:

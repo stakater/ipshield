@@ -97,7 +97,9 @@ spec:
             - labelSelector
             type: object
           status:
-            description: RouteWhitelistStatus defines the observed state of RouteWhitelist
+            description: |-
+              RouteWhitelistStatus defines the observed state of RouteWhitelist
+              TODO add conditions
             type: object
         type: object
     served: true

@@ -99,7 +99,9 @@ func (r *RouteWhitelistReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		controllerutil.AddFinalizer(cr, RouteWhitelistFinalizer)
 	}
 
+	// Update all watched routes
 	for _, watchedRoute := range routes.Items {
+		// If label is true update all routes
 		watchedRoute.Annotations[WhiteListAnnotation] = mergeSet(strings.Split(watchedRoute.
 			Annotations[WhiteListAnnotation], " "), cr.Spec.IPRanges)
 
@@ -109,6 +111,9 @@ func (r *RouteWhitelistReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 				RequeueAfter: 3 * time.Minute,
 			}, err
 		}
+
+		// TODO if label is false or not exists, revert it back to original state
+		// 1. Save state to a configmap so it can be reverted
 	}
 
 	return ctrl.Result{}, r.Update(ctx, cr)

@@ -101,6 +101,7 @@ func main() {
 		TLSOpts: tlsOpts,
 	})
 
+	// TODO only allow operator to watch it's resources in a fixed namespace
 	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
 		Scheme: scheme,
 		Metrics: metricsserver.Options{
@@ -124,6 +125,8 @@ func main() {
 		// after the manager stops then its usage might be unsafe.
 		// LeaderElectionReleaseOnCancel: true,
 
+		// Only watch routes with label set
+		// TODO test this by adding removing, switching true/false watch label
 		NewCache: func(config *rest.Config, opts cache.Options) (cache.Cache, error) {
 			watchEnabledLabel := labels.Set{
 				controller.IPShieldWatchedResourceLabel: strconv.FormatBool(true),
