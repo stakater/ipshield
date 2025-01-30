@@ -1,0 +1,50 @@
+apiVersion: operators.coreos.com/v1alpha1
+kind: ClusterServiceVersion
+metadata:
+  annotations:
+    alm-examples: '[]'
+    capabilities: Basic Install
+  name: ipshield-operator.v0.0.0
+  namespace: placeholder
+spec:
+  apiservicedefinitions: {}
+  customresourcedefinitions:
+    owned:
+    - description: RouteWhitelist is the Schema for the routewhitelists API
+      displayName: Route Whitelist
+      kind: RouteWhitelist
+      name: routewhitelists.networking.stakater.com
+      version: v1alpha1
+  description: Stakater networking operator for managing routes access
+  displayName: ipshield-operator
+  icon:
+  - base64data: ""
+    mediatype: ""
+  install:
+    spec:
+      deployments: null
+    strategy: ""
+  installModes:
+  - supported: false
+    type: OwnNamespace
+  - supported: false
+    type: SingleNamespace
+  - supported: false
+    type: MultiNamespace
+  - supported: true
+    type: AllNamespaces
+  keywords:
+  - Openshift
+  - Stakater AB
+  - Routes
+  - IP Whitelisting
+  - Networking
+  - Operator-SDK
+  links:
+  - name: Ipshield Operator
+    url: https://www.stakater.com
+  maturity: alpha
+  provider:
+    name: Stakater AB
+    url: https://www.stakater.com
+  version: 0.0.0

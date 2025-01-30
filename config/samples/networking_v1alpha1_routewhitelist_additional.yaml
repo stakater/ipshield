@@ -1,0 +1,14 @@
+apiVersion: networking.stakater.com/v1alpha1
+kind: RouteWhitelist
+metadata:
+  labels:
+    app.kubernetes.io/name: ipshield-operator
+    app.kubernetes.io/managed-by: kustomize
+  name: routewhitelist-additional-sample
+spec:
+  labelSelector:
+    matchLabels:
+      app: ip-test
+  ipRanges:
+    - 10.100.110.13
+    - 10.100.110.14
