@@ -19,12 +19,11 @@ package main
 import (
 	"crypto/tls"
 	"flag"
-	"k8s.io/apimachinery/pkg/labels"
-	"k8s.io/client-go/rest"
 	"os"
+
+	"k8s.io/client-go/rest"
 	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	"strconv"
 
 	// Import all Kubernetes client auth plugins (e.g. Azure, GCP, OIDC, etc.)
 	// to ensure that exec-entrypoint and run can make use of them.
@@ -41,6 +40,7 @@ import (
 
 	networkingv1alpha1 "github.com/stakater/ipshield-operator/api/v1alpha1"
 	"github.com/stakater/ipshield-operator/internal/controller"
+
 	//+kubebuilder:scaffold:imports
 
 	route "github.com/openshift/api/route/v1"
@@ -50,6 +50,19 @@ var (
 	scheme   = runtime.NewScheme()
 	setupLog = ctrl.Log.WithName("setup")
 )
+
+const DefaultWatchedNamespace = "ipshield-cr" // operator will watch for CRDs in this namespace only
+
+func getWatchNamespace() string {
+	var watchNamespaceEnvVar = "WATCH_NAMESPACE"
+
+	ns, found := os.LookupEnv(watchNamespaceEnvVar)
+	if !found {
+		// fallback to default
+		ns = DefaultWatchedNamespace
+	}
+	return ns
+}
 
 func init() {
 	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
@@ -101,6 +114,8 @@ func main() {
 		TLSOpts: tlsOpts,
 	})
 
+	watchNamespace := getWatchNamespace()
+
 	// TODO only allow operator to watch it's resources in a fixed namespace
 	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
 		Scheme: scheme,
@@ -128,14 +143,13 @@ func main() {
 		// Only watch routes with label set
 		// TODO test this by adding removing, switching true/false watch label
 		NewCache: func(config *rest.Config, opts cache.Options) (cache.Cache, error) {
-			watchEnabledLabel := labels.Set{
-				controller.IPShieldWatchedResourceLabel: strconv.FormatBool(true),
-			}
-
 			// Only watch marked secrets
 			opts.ByObject = map[client.Object]cache.ByObject{
-				&route.Route{}: {
-					Label: labels.SelectorFromSet(watchEnabledLabel),
+
+				&networkingv1alpha1.RouteWhitelist{}: {
+					Namespaces: map[string]cache.Config{
+						watchNamespace: {},
+					},
 				},
 			}
 
