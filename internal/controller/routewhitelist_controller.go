@@ -63,8 +63,8 @@ func setCondition(conditions *[]metav1.Condition, conditionType, status, reason,
 	apimeta.SetStatusCondition(conditions, condition)
 }
 
-func setAdmitted(conditions *[]metav1.Condition) {
-	setCondition(conditions, "Admitted", string(metav1.ConditionTrue), "ReconcileSucessful", "Reconcilation successful")
+func setSuccessful(conditions *[]metav1.Condition, conditionType string) {
+	setCondition(conditions, conditionType, string(metav1.ConditionTrue), "ReconcileSucessful", "Reconcilation successful")
 }
 
 func setFailed(conditions *[]metav1.Condition, reconcileType string, err error) {
@@ -96,8 +96,10 @@ func (r *RouteWhitelistReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 	}
 
 	crPatchBase := client.MergeFrom(cr.DeepCopy())
-	setCondition(&cr.Status.Conditions, "WhiteListReconciling", "Reconciling", "", "")
-	r.Patch(ctx, cr, crPatchBase)
+	apimeta.RemoveStatusCondition(&cr.Status.Conditions, "Admitted")
+	apimeta.RemoveStatusCondition(&cr.Status.Conditions, "Updating")
+	setCondition(&cr.Status.Conditions, "WhiteListReconciling", "True", "ProcessingWhitelist", "Searching for routes")
+	err = r.Status().Patch(ctx, cr, crPatchBase)
 
 	// Get routes
 	routes := &route.RouteList{}
@@ -121,7 +123,7 @@ func (r *RouteWhitelistReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 	}
 
 	if len(routes.Items) == 0 {
-		setAdmitted(&cr.Status.Conditions)
+		setSuccessful(&cr.Status.Conditions, "NoRoutesFound")
 		r.Patch(ctx, cr, crPatchBase)
 		return ctrl.Result{}, nil
 	}
@@ -140,7 +142,7 @@ func (r *RouteWhitelistReconciler) handleUpdate(ctx context.Context, routes *rou
 
 	if err != nil {
 		setWarning(&cr.Status.Conditions, "ConfigMapFetchFailure", fmt.Errorf("failed to get config map %e", err))
-		r.Patch(ctx, cr, *patchBase)
+		r.Status().Patch(ctx, cr, *patchBase)
 	}
 
 	for _, watchedRoute := range routes.Items {
@@ -149,7 +151,7 @@ func (r *RouteWhitelistReconciler) handleUpdate(ctx context.Context, routes *rou
 		apimeta.RemoveStatusCondition(&cr.Status.Conditions, "Updating") // removing previous route condition
 		setCondition(&cr.Status.Conditions, "Updating", "True", "UpdatingRoute", fmt.Sprintf("Updating route '%s'", watchedRoute.Name))
 
-		r.Patch(ctx, cr, *patchBase)
+		err = r.Status().Patch(ctx, cr, *patchBase)
 
 		if val, ok := watchedRoute.Labels[IPShieldWatchedResourceLabel]; !ok || val != "true" {
 			r.unwatchRoute(ctx, watchedRoute, cr, configMapAvailable, configMap)
@@ -174,7 +176,9 @@ func (r *RouteWhitelistReconciler) handleUpdate(ctx context.Context, routes *rou
 		}
 	}
 	apimeta.RemoveStatusCondition(&cr.Status.Conditions, "Updating")
-	setAdmitted(&cr.Status.Conditions)
+	apimeta.RemoveStatusCondition(&cr.Status.Conditions, "WhiteListReconciling")
+	setSuccessful(&cr.Status.Conditions, "Admitted")
+	err = r.Status().Patch(ctx, cr, *patchBase)
 
 	return ctrl.Result{}, r.Patch(ctx, cr, *patchBase)
 }
@@ -221,7 +225,9 @@ func (r *RouteWhitelistReconciler) handleDelete(ctx context.Context, routes *rou
 		}
 	}
 
-	setAdmitted(&cr.Status.Conditions)
+	setSuccessful(&cr.Status.Conditions, "Deleted")
+	err = r.Status().Patch(ctx, cr, *crPatchBase)
+
 	controllerutil.RemoveFinalizer(cr, RouteWhitelistFinalizer)
 	return ctrl.Result{}, r.Patch(ctx, cr, *crPatchBase)
 }
