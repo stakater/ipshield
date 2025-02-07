@@ -123,9 +123,6 @@ kubectl label routes nginx-deployment ip-whitelist.stakater.cloud/enabled=true -
 ```sh
 kubectl apply -f whitelist.yaml -n $WATCH_NAMESPACE
 ```
-**NOTE:** Run `make help` for more information on all potential `make` targets
-
-More information can be found via the [Kubebuilder Documentation](https://book.kubebuilder.io/introduction.html)
 
 ## License
 
