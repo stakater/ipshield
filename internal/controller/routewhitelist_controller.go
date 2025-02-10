@@ -79,6 +79,7 @@ func setWarning(conditions *[]metav1.Condition, reconcileType string, err error)
 //+kubebuilder:rbac:groups=networking.stakater.com,resources=routewhitelists/status,verbs=get;update;patch
 //+kubebuilder:rbac:groups=networking.stakater.com,resources=routewhitelists/finalizers,verbs=update
 //+kubebuilder:rbac:groups=route.openshift.io,resources=routes,verbs=get;list;watch;update
+//+kubebuilder:rbac:groups=core,resources=configmaps,verbs=get;list;watch;create;update;patch;delete
 
 func (r *RouteWhitelistReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	logger := log.FromContext(ctx).WithName("ipShield-controller")
@@ -127,12 +128,13 @@ func (r *RouteWhitelistReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		r.Patch(ctx, cr, crPatchBase)
 		return ctrl.Result{}, nil
 	}
-
-	return r.handleUpdate(ctx, routes, cr, &crPatchBase)
+	r.Patch(ctx, cr, crPatchBase)
+	return r.handleUpdate(ctx, routes, cr)
 }
 
-func (r *RouteWhitelistReconciler) handleUpdate(ctx context.Context, routes *route.RouteList, cr *networkingv1alpha1.RouteWhitelist, patchBase *client.Patch) (ctrl.Result, error) {
+func (r *RouteWhitelistReconciler) handleUpdate(ctx context.Context, routes *route.RouteList, cr *networkingv1alpha1.RouteWhitelist) (ctrl.Result, error) {
 	var err error
+	patchBase := client.MergeFrom(cr.DeepCopy())
 
 	apimeta.RemoveStatusCondition(&cr.Status.Conditions, "ConfigMapUpdateFailure")
 	apimeta.RemoveStatusCondition(&cr.Status.Conditions, "RouteUpdateFailure")
@@ -142,16 +144,15 @@ func (r *RouteWhitelistReconciler) handleUpdate(ctx context.Context, routes *rou
 
 	if err != nil {
 		setWarning(&cr.Status.Conditions, "ConfigMapFetchFailure", fmt.Errorf("failed to get config map %e", err))
-		r.Status().Patch(ctx, cr, *patchBase)
+		r.Status().Patch(ctx, cr, patchBase)
 	}
 
 	for _, watchedRoute := range routes.Items {
-		watchedRoutePatchBase := client.MergeFrom(watchedRoute.DeepCopy())
 
 		apimeta.RemoveStatusCondition(&cr.Status.Conditions, "Updating") // removing previous route condition
 		setCondition(&cr.Status.Conditions, "Updating", "True", "UpdatingRoute", fmt.Sprintf("Updating route '%s'", watchedRoute.Name))
 
-		err = r.Status().Patch(ctx, cr, *patchBase)
+		err = r.Status().Patch(ctx, cr, patchBase)
 
 		if val, ok := watchedRoute.Labels[IPShieldWatchedResourceLabel]; !ok || val != "true" {
 			r.unwatchRoute(ctx, watchedRoute, cr, configMapAvailable, configMap)
@@ -164,12 +165,12 @@ func (r *RouteWhitelistReconciler) handleUpdate(ctx context.Context, routes *rou
 		// If label is true update all routes
 		watchedRoute.Annotations[WhiteListAnnotation] = mergeSet(strings.Split(watchedRoute.Annotations[WhiteListAnnotation], " "), cr.Spec.IPRanges)
 
-		err = r.Patch(ctx, &watchedRoute, watchedRoutePatchBase)
+		err = r.Update(ctx, &watchedRoute)
 
 		if err != nil {
 			apimeta.RemoveStatusCondition(&cr.Status.Conditions, "Updating")
 			setFailed(&cr.Status.Conditions, "RouteUpdateFailure", err)
-			r.Status().Patch(ctx, cr, *patchBase)
+			r.Status().Patch(ctx, cr, patchBase)
 			return ctrl.Result{
 				RequeueAfter: 3 * time.Minute,
 			}, err
@@ -178,9 +179,9 @@ func (r *RouteWhitelistReconciler) handleUpdate(ctx context.Context, routes *rou
 	apimeta.RemoveStatusCondition(&cr.Status.Conditions, "Updating")
 	apimeta.RemoveStatusCondition(&cr.Status.Conditions, "WhiteListReconciling")
 	setSuccessful(&cr.Status.Conditions, "Admitted")
-	err = r.Status().Patch(ctx, cr, *patchBase)
+	err = r.Status().Patch(ctx, cr, patchBase)
 
-	return ctrl.Result{}, r.Patch(ctx, cr, *patchBase)
+	return ctrl.Result{}, r.Patch(ctx, cr, patchBase)
 }
 
 func (r *RouteWhitelistReconciler) updateConfigMap(ctx context.Context, watchedRoute route.Route, cr *networkingv1alpha1.RouteWhitelist, configMap *corev1.ConfigMap) error {
@@ -243,27 +244,33 @@ func (r *RouteWhitelistReconciler) unwatchRoute(ctx context.Context, watchedRout
 		diff = configMapValues
 	}
 
-	if diff == configMapValues {
+	if diffSet(strings.Split(diff, " "), strings.Split(configMapValues, " ")) == "" {
 		delete(configMap.Data, routeFullName)
 		r.Update(ctx, configMap)
 	}
 
-	watchedRoute.Annotations[WhiteListAnnotation] = diff
-
+	if diff == "" {
+		delete(watchedRoute.Annotations, WhiteListAnnotation)
+	} else {
+		watchedRoute.Annotations[WhiteListAnnotation] = diff
+	}
 	return r.Patch(ctx, &watchedRoute, patchBase)
 }
 
 func (r *RouteWhitelistReconciler) getConfigMap(ctx context.Context, configMap *corev1.ConfigMap) (bool, error) {
-	err := r.Get(ctx, types.NamespacedName{Namespace: "ipshield-operator-system", Name: "watched-routes"}, configMap)
+	timeout, cancel := context.WithTimeout(ctx, time.Second*10)
+	err := r.Client.Get(timeout, types.NamespacedName{Namespace: "ipshield-operator-system", Name: "watched-routes"}, configMap)
 
 	if err != nil && errors.IsNotFound(err) {
 		err = r.createConfigMap(ctx, configMap)
 		if err != nil {
+			cancel()
 			return false, err
 		}
-		err = r.Get(ctx, types.NamespacedName{Namespace: "ipshield-operator-system", Name: "watched-routes"}, configMap)
+		err = r.Client.Get(ctx, types.NamespacedName{Namespace: "ipshield-operator-system", Name: "watched-routes"}, configMap)
 	}
 
+	cancel()
 	return err == nil, err
 }
 
@@ -271,7 +278,7 @@ func (r *RouteWhitelistReconciler) createConfigMap(ctx context.Context, configMa
 	configMap.ObjectMeta.Name = "watched-routes"
 	configMap.ObjectMeta.Namespace = "ipshield-operator-system"
 
-	return r.Create(ctx, configMap)
+	return r.Client.Create(ctx, configMap)
 }
 
 func getNamespacedName(value, sep string) (types.NamespacedName, error) {
@@ -339,6 +346,6 @@ func (r *RouteWhitelistReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		For(&networkingv1alpha1.RouteWhitelist{}, builder.WithPredicates(predicate.GenerationChangedPredicate{})).
 		// Watch for route labels and annotations changes
 		Watches(&route.Route{}, handler.EnqueueRequestsFromMapFunc(r.mapRouteToRouteWhiteList),
-			builder.WithPredicates(predicate.Or(predicate.LabelChangedPredicate{}, predicate.AnnotationChangedPredicate{}))).
+			builder.WithPredicates(predicate.LabelChangedPredicate{}, predicate.AnnotationChangedPredicate{})).
 		Complete(r)
 }

@@ -21,10 +21,6 @@ import (
 	"flag"
 	"os"
 
-	"k8s.io/client-go/rest"
-	"sigs.k8s.io/controller-runtime/pkg/cache"
-	"sigs.k8s.io/controller-runtime/pkg/client"
-
 	// Import all Kubernetes client auth plugins (e.g. Azure, GCP, OIDC, etc.)
 	// to ensure that exec-entrypoint and run can make use of them.
 	_ "k8s.io/client-go/plugin/pkg/client/auth"
@@ -114,7 +110,7 @@ func main() {
 		TLSOpts: tlsOpts,
 	})
 
-	watchNamespace := getWatchNamespace()
+	//watchNamespace := getWatchNamespace()
 
 	// TODO only allow operator to watch it's resources in a fixed namespace
 	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
@@ -142,19 +138,19 @@ func main() {
 
 		// Only watch routes with label set
 		// TODO test this by adding removing, switching true/false watch label
-		NewCache: func(config *rest.Config, opts cache.Options) (cache.Cache, error) {
-			// Only watch marked secrets
-			opts.ByObject = map[client.Object]cache.ByObject{
+		// NewCache: func(config *rest.Config, opts cache.Options) (cache.Cache, error) {
+		// 	// Only watch marked secrets
+		// 	opts.ByObject = map[client.Object]cache.ByObject{
 
-				&networkingv1alpha1.RouteWhitelist{}: {
-					Namespaces: map[string]cache.Config{
-						watchNamespace: {},
-					},
-				},
-			}
+		// 		&networkingv1alpha1.RouteWhitelist{}: {
+		// 			Namespaces: map[string]cache.Config{
+		// 				watchNamespace: {},
+		// 			},
+		// 		},
+		// 	}
 
-			return cache.New(config, opts)
-		},
+		// 	return cache.New(config, opts)
+		// },
 	})
 	if err != nil {
 		setupLog.Error(err, "unable to start manager")
