@@ -160,7 +160,7 @@ spec:
                 - --leader-elect
                 command:
                 - /manager
-                image: stakaterdockerhubpullroot/ipshield-operator:v0.0.1
+                image: ghcr.io/stakater/ipshield-operator:v0.0.1
                 livenessProbe:
                   httpGet:
                     path: /healthz

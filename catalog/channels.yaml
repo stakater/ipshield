@@ -1,0 +1,5 @@
+schema: olm.channel
+package: ipshield-operator
+name: preview
+entries:
+  - name: ipshield-operator.v0.0.1
