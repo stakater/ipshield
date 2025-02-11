@@ -157,4 +157,53 @@ var _ = Describe("RouteWhitelist Controller", Ordered, func() {
 		Expect(fakeClient.Get(ctx, types.NamespacedName{Namespace: OperatorNamespace, Name: WatchedRoutesConfigMapName}, watchedRoutes)).Should(Succeed())
 		Expect(watchedRoutes.Data).To(HaveKeyWithValue(fmt.Sprintf("%s__%s", osRoute.Namespace, osRoute.Name), "10.33.52.5"))
 	})
+
+	It("should will test that backup is stored in configmap", func() {
+		By("Reconciling the created resource")
+
+		osRoute := &v1.Route{}
+		err := fakeClient.Get(ctx, types.NamespacedName{Namespace: r.GetNamespace(), Name: r.GetName()}, osRoute)
+
+		osRoute.Annotations[WhiteListAnnotation] = "10.33.52.5"
+		err = fakeClient.Update(ctx, osRoute)
+
+		_, err = reconciler.Reconcile(ctx, reconcile.Request{
+			NamespacedName: types.NamespacedName{
+				Namespace: whitelist.Namespace,
+				Name:      whitelist.Name,
+			},
+		})
+
+		Expect(err).NotTo(HaveOccurred())
+
+		Expect(fakeClient.Get(ctx, types.NamespacedName{Namespace: r.GetNamespace(), Name: r.GetName()}, osRoute)).To(Succeed())
+		Expect(osRoute.Annotations).To(HaveKey(WhiteListAnnotation))
+		Expect(strings.Split(osRoute.Annotations[WhiteListAnnotation], " ")).Should(ConsistOf([]string{"10.100.123.24", "10.33.52.5"}))
+
+		Expect(fakeClient.Get(ctx, types.NamespacedName{Namespace: whitelist.Namespace, Name: whitelist.Name}, whitelist)).Should(Succeed())
+		Expect(whitelist.Status.Conditions).To(HaveLen(1))
+
+		Expect(whitelist.Status.Conditions[0].Type).Should(Equal("Admitted"))
+
+		watchedRoutes := &corev1.ConfigMap{}
+		Expect(fakeClient.Get(ctx, types.NamespacedName{Namespace: OperatorNamespace, Name: WatchedRoutesConfigMapName}, watchedRoutes)).Should(Succeed())
+		Expect(watchedRoutes.Data).To(HaveKeyWithValue(fmt.Sprintf("%s__%s", osRoute.Namespace, osRoute.Name), "10.33.52.5"))
+
+		Expect(fakeClient.Delete(ctx, whitelist)).Should(Succeed())
+
+		_, err = reconciler.Reconcile(ctx, reconcile.Request{
+			NamespacedName: types.NamespacedName{
+				Namespace: whitelist.Namespace,
+				Name:      whitelist.Name,
+			},
+		})
+
+		Expect(fakeClient.Get(ctx, types.NamespacedName{Namespace: r.GetNamespace(), Name: r.GetName()}, osRoute)).To(Succeed())
+		Expect(osRoute.Annotations).To(HaveKey(WhiteListAnnotation))
+		Expect(strings.Split(osRoute.Annotations[WhiteListAnnotation], " ")).Should(ConsistOf([]string{"10.33.52.5"}))
+
+		Expect(fakeClient.Get(ctx, types.NamespacedName{Namespace: OperatorNamespace, Name: WatchedRoutesConfigMapName}, watchedRoutes)).Should(Succeed())
+		Expect(watchedRoutes.Data).ShouldNot(HaveKey(fmt.Sprintf("%s__%s", osRoute.Namespace, osRoute.Name)))
+
+	})
 })
