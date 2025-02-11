@@ -43,10 +43,14 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 )
 
-const IPShieldWatchedResourceLabel = "ip-whitelist.stakater.cloud/enabled"
-const RouteWhitelistFinalizer = "ip-whitelist.stakater.cloud/finalizer"
-const WhiteListAnnotation = "haproxy.router.openshift.io/ip_whitelist"
-const RouteMangedByAnnotation = "ip-whitelist.stakater.cloud/managed-by"
+const (
+	IPShieldWatchedResourceLabel = "ip-whitelist.stakater.cloud/enabled"
+	RouteWhitelistFinalizer      = "ip-whitelist.stakater.cloud/finalizer"
+	WhiteListAnnotation          = "haproxy.router.openshift.io/ip_whitelist"
+
+	OperatorNamespace          = "ipshield-operator-namespace"
+	WatchedRoutesConfigMapName = "watched-routes"
+)
 
 type RouteWhitelistReconciler struct {
 	client.Client
@@ -68,11 +72,11 @@ func setSuccessful(conditions *[]metav1.Condition, conditionType string) {
 }
 
 func setFailed(conditions *[]metav1.Condition, reconcileType string, err error) {
-	setCondition(conditions, reconcileType, string(metav1.ConditionFalse), "ReconcileError", fmt.Errorf("failed due to error %e", err).Error())
+	setCondition(conditions, reconcileType, string(metav1.ConditionFalse), "ReconcileError", fmt.Errorf("failed due to error %s", err).Error())
 }
 
 func setWarning(conditions *[]metav1.Condition, reconcileType string, err error) {
-	setCondition(conditions, reconcileType, string(metav1.ConditionFalse), "ReconcileWarning", fmt.Errorf("an error occurred %e", err).Error())
+	setCondition(conditions, reconcileType, string(metav1.ConditionFalse), "ReconcileWarning", fmt.Errorf("an error occurred %s", err).Error())
 }
 
 //+kubebuilder:rbac:groups=networking.stakater.com,resources=routewhitelists,verbs=get;list;watch;create;update;patch;delete
@@ -125,10 +129,10 @@ func (r *RouteWhitelistReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 
 	if len(routes.Items) == 0 {
 		setSuccessful(&cr.Status.Conditions, "NoRoutesFound")
-		r.Patch(ctx, cr, crPatchBase)
+		_ = r.Patch(ctx, cr, crPatchBase)
 		return ctrl.Result{}, nil
 	}
-	r.Patch(ctx, cr, crPatchBase)
+	_ = r.Patch(ctx, cr, crPatchBase)
 	return r.handleUpdate(ctx, routes, cr)
 }
 
@@ -144,7 +148,7 @@ func (r *RouteWhitelistReconciler) handleUpdate(ctx context.Context, routes *rou
 
 	if err != nil {
 		setWarning(&cr.Status.Conditions, "ConfigMapFetchFailure", fmt.Errorf("failed to get config map %e", err))
-		r.Status().Patch(ctx, cr, patchBase)
+		_ = r.Status().Patch(ctx, cr, patchBase)
 	}
 
 	for _, watchedRoute := range routes.Items {
@@ -155,14 +159,20 @@ func (r *RouteWhitelistReconciler) handleUpdate(ctx context.Context, routes *rou
 		err = r.Status().Patch(ctx, cr, patchBase)
 
 		if val, ok := watchedRoute.Labels[IPShieldWatchedResourceLabel]; !ok || val != "true" {
-			r.unwatchRoute(ctx, watchedRoute, cr, configMapAvailable, configMap)
+			err = r.unwatchRoute(ctx, watchedRoute, cr, configMapAvailable, configMap)
+			if err != nil {
+				apimeta.RemoveStatusCondition(&cr.Status.Conditions, "Updating")
+				setFailed(&cr.Status.Conditions, "RouteUpdateFailure", err)
+				_ = r.Status().Patch(ctx, cr, patchBase)
+				return ctrl.Result{RequeueAfter: 3 * time.Minute}, nil
+			}
 			continue
 		}
 
 		if configMapAvailable {
-			r.updateConfigMap(ctx, watchedRoute, cr, configMap)
+			r.updateConfigMap(ctx, watchedRoute, cr, configMap, &patchBase)
 		}
-		// If label is true update all routes
+
 		watchedRoute.Annotations[WhiteListAnnotation] = mergeSet(strings.Split(watchedRoute.Annotations[WhiteListAnnotation], " "), cr.Spec.IPRanges)
 
 		err = r.Update(ctx, &watchedRoute)
@@ -170,44 +180,44 @@ func (r *RouteWhitelistReconciler) handleUpdate(ctx context.Context, routes *rou
 		if err != nil {
 			apimeta.RemoveStatusCondition(&cr.Status.Conditions, "Updating")
 			setFailed(&cr.Status.Conditions, "RouteUpdateFailure", err)
-			r.Status().Patch(ctx, cr, patchBase)
+			_ = r.Status().Patch(ctx, cr, patchBase)
 			return ctrl.Result{
 				RequeueAfter: 3 * time.Minute,
-			}, err
+			}, nil
 		}
 	}
 	apimeta.RemoveStatusCondition(&cr.Status.Conditions, "Updating")
 	apimeta.RemoveStatusCondition(&cr.Status.Conditions, "WhiteListReconciling")
 	setSuccessful(&cr.Status.Conditions, "Admitted")
-	err = r.Status().Patch(ctx, cr, patchBase)
 
+	err = r.Status().Patch(ctx, cr, patchBase)
 	return ctrl.Result{}, r.Patch(ctx, cr, patchBase)
 }
 
-func (r *RouteWhitelistReconciler) updateConfigMap(ctx context.Context, watchedRoute route.Route, cr *networkingv1alpha1.RouteWhitelist, configMap *corev1.ConfigMap) error {
+func (r *RouteWhitelistReconciler) updateConfigMap(ctx context.Context, watchedRoute route.Route, cr *networkingv1alpha1.RouteWhitelist, configMap *corev1.ConfigMap, patchBase *client.Patch) {
 	var err error
 	apimeta.RemoveStatusCondition(&cr.Status.Conditions, "ConfigMapUpdateFailure")
 
 	routeFullName := fmt.Sprintf("%s__%s", watchedRoute.Namespace, watchedRoute.Name)
 
+	if _, ok := configMap.Data[routeFullName]; ok {
+		return
+	}
+
 	if configMap.Data == nil {
 		configMap.Data = make(map[string]string)
 	}
 
-	if _, ok := configMap.Data[routeFullName]; !ok {
-		if oldwhiteList, ok := watchedRoute.Annotations[WhiteListAnnotation]; ok && oldwhiteList != "" {
-			configMap.Data[routeFullName] = oldwhiteList
-		}
+	if originalWhitelist, ok := watchedRoute.Annotations[WhiteListAnnotation]; ok && originalWhitelist != "" {
+		configMap.Data[routeFullName] = originalWhitelist
 	}
 
 	if err = r.Update(ctx, configMap); err != nil {
 		apimeta.RemoveStatusCondition(&cr.Status.Conditions, "Updating")
 		setWarning(&cr.Status.Conditions, "ConfigMapUpdateFailure", err)
-		r.Status().Update(ctx, cr)
-		return err
+		_ = r.Status().Patch(ctx, cr, *patchBase)
+		*patchBase = client.MergeFrom(cr.DeepCopy())
 	}
-
-	return nil
 }
 
 func (r *RouteWhitelistReconciler) handleDelete(ctx context.Context, routes *route.RouteList, cr *networkingv1alpha1.RouteWhitelist, crPatchBase *client.Patch) (ctrl.Result, error) {
@@ -217,7 +227,7 @@ func (r *RouteWhitelistReconciler) handleDelete(ctx context.Context, routes *rou
 
 	if err != nil {
 		setWarning(&cr.Status.Conditions, "ConfigMapFetchFailure", fmt.Errorf("failed to get config map %e", err))
-		r.Status().Patch(ctx, cr, *crPatchBase)
+		_ = r.Status().Patch(ctx, cr, *crPatchBase)
 	}
 
 	for _, watchedRoute := range routes.Items {
@@ -246,7 +256,7 @@ func (r *RouteWhitelistReconciler) unwatchRoute(ctx context.Context, watchedRout
 
 	if diffSet(strings.Split(diff, " "), strings.Split(configMapValues, " ")) == "" {
 		delete(configMap.Data, routeFullName)
-		r.Update(ctx, configMap)
+		_ = r.Update(ctx, configMap)
 	}
 
 	if diff == "" {
@@ -258,41 +268,24 @@ func (r *RouteWhitelistReconciler) unwatchRoute(ctx context.Context, watchedRout
 }
 
 func (r *RouteWhitelistReconciler) getConfigMap(ctx context.Context, configMap *corev1.ConfigMap) (bool, error) {
-	timeout, cancel := context.WithTimeout(ctx, time.Second*10)
-	err := r.Client.Get(timeout, types.NamespacedName{Namespace: "ipshield-operator-system", Name: "watched-routes"}, configMap)
+	err := r.Get(ctx, types.NamespacedName{Name: WatchedRoutesConfigMapName, Namespace: OperatorNamespace}, configMap)
 
 	if err != nil && errors.IsNotFound(err) {
 		err = r.createConfigMap(ctx, configMap)
 		if err != nil {
-			cancel()
 			return false, err
 		}
-		err = r.Client.Get(ctx, types.NamespacedName{Namespace: "ipshield-operator-system", Name: "watched-routes"}, configMap)
+		err = r.Get(ctx, types.NamespacedName{Name: WatchedRoutesConfigMapName, Namespace: OperatorNamespace}, configMap)
 	}
 
-	cancel()
 	return err == nil, err
 }
 
 func (r *RouteWhitelistReconciler) createConfigMap(ctx context.Context, configMap *corev1.ConfigMap) error {
-	configMap.ObjectMeta.Name = "watched-routes"
-	configMap.ObjectMeta.Namespace = "ipshield-operator-system"
+	configMap.ObjectMeta.Name = WatchedRoutesConfigMapName
+	configMap.ObjectMeta.Namespace = OperatorNamespace
 
 	return r.Client.Create(ctx, configMap)
-}
-
-func getNamespacedName(value, sep string) (types.NamespacedName, error) {
-	namespacedName := types.NamespacedName{}
-	splits := strings.Split(value, sep)
-
-	if len(splits) != 2 {
-		return namespacedName, fmt.Errorf("incorrect string format")
-	}
-
-	namespacedName.Namespace = splits[0]
-	namespacedName.Name = splits[1]
-
-	return namespacedName, nil
 }
 
 func mergeSet(s1 []string, s2 []string) string {
@@ -314,7 +307,7 @@ func (r *RouteWhitelistReconciler) mapRouteToRouteWhiteList(ctx context.Context,
 	logger := log.FromContext(ctx).WithName("mapRouteToRouteWhiteList")
 	logger.Info("Mapping route to CR")
 	openshiftRoute := obj.(*route.Route)
-	result := []reconcile.Request{}
+	var result []reconcile.Request
 
 	if val, ok := openshiftRoute.Labels[IPShieldWatchedResourceLabel]; !ok || val != "true" {
 		return result
@@ -346,6 +339,6 @@ func (r *RouteWhitelistReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		For(&networkingv1alpha1.RouteWhitelist{}, builder.WithPredicates(predicate.GenerationChangedPredicate{})).
 		// Watch for route labels and annotations changes
 		Watches(&route.Route{}, handler.EnqueueRequestsFromMapFunc(r.mapRouteToRouteWhiteList),
-			builder.WithPredicates(predicate.LabelChangedPredicate{}, predicate.AnnotationChangedPredicate{})).
+			builder.WithPredicates(predicate.Or(predicate.LabelChangedPredicate{}, predicate.AnnotationChangedPredicate{}))).
 		Complete(r)
 }
