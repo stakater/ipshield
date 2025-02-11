@@ -12,7 +12,7 @@ name: preview
 entries:
   - name: ipshield-operator.v0.0.1
 ---
-image: docker.io/stakaterdockerhubpullroot/ipshield-operator-bundle:v0.0.1
+image: ghcr.io/stakater/ipshield-operator-bundle:v0.0.1
 name: ipshield-operator.v0.0.1
 package: ipshield-operator
 properties:
@@ -81,10 +81,10 @@ properties:
       name: Stakater AB
       url: https://www.stakater.com
 relatedImages:
-- image: docker.io/stakaterdockerhubpullroot/ipshield-operator-bundle:v0.0.1
+- image: ghcr.io/stakater/ipshield-operator-bundle:v0.0.1
   name: ""
 - image: gcr.io/kubebuilder/kube-rbac-proxy:v0.16.0
   name: ""
-- image: stakaterdockerhubpullroot/ipshield-operator:v0.0.1
+- image: ghcr.io/stakater/ipshield-operator:v0.0.1
   name: ""
 schema: olm.bundle
