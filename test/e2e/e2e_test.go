@@ -20,18 +20,16 @@ import (
 	"context"
 	"fmt"
 	corev1 "k8s.io/api/core/v1"
-	"os/exec"
-	"strconv"
-	"strings"
-	"testing"
-	"time"
-
-	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/client-go/kubernetes"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+	"os/exec"
+	"strconv"
+	"strings"
+	"testing"
+	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -85,23 +83,6 @@ func TestRouteWhiteLists(t *testing.T) {
 	RegisterFailHandler(Fail)
 	fmt.Fprintf(GinkgoWriter, "Starting ipshield-operator suite\n")
 	RunSpecs(t, "TestRouteWhiteLists")
-}
-
-func getRouteWhiteListSpec(name, ns string, ips []string) *networkingv1alpha1.RouteWhitelist {
-	return &networkingv1alpha1.RouteWhitelist{
-		ObjectMeta: v1.ObjectMeta{
-			Name:      name,
-			Namespace: ns,
-		},
-		Spec: networkingv1alpha1.RouteWhitelistSpec{
-			LabelSelector: &v1.LabelSelector{
-				MatchLabels: map[string]string{
-					"ipshield": strconv.FormatBool(true),
-				},
-			},
-			IPRanges: ips,
-		},
-	}
 }
 
 var _ = Describe("controller", Ordered, func() {
@@ -215,7 +196,7 @@ var _ = Describe("controller", Ordered, func() {
 		})
 
 		It("Deploy CR but route doesn't have label", func() {
-			whitelist = getRouteWhiteListSpec("sample", IPShieldCRNamespace, []string{"10.200.15.13"})
+			whitelist = utils.GetRouteWhiteListSpec("sample", IPShieldCRNamespace, []string{"10.200.15.13"})
 			err := client.Create(context.TODO(), whitelist)
 			Expect(err).NotTo(HaveOccurred())
 
@@ -239,7 +220,7 @@ var _ = Describe("controller", Ordered, func() {
 			r.Labels[controller.IPShieldWatchedResourceLabel] = strconv.FormatBool(true)
 			Expect(client.Update(context.TODO(), r)).NotTo(HaveOccurred())
 
-			whitelist = getRouteWhiteListSpec("sample", IPShieldCRNamespace, []string{"10.200.15.13"})
+			whitelist = utils.GetRouteWhiteListSpec("sample", IPShieldCRNamespace, []string{"10.200.15.13"})
 			err = client.Create(context.TODO(), whitelist)
 			Expect(err).NotTo(HaveOccurred())
 
@@ -268,7 +249,7 @@ var _ = Describe("controller", Ordered, func() {
 
 			time.Sleep(5 * time.Second)
 
-			whitelist = getRouteWhiteListSpec("sample", IPShieldCRNamespace, []string{"10.200.15.13", "10.200.15.132"})
+			whitelist = utils.GetRouteWhiteListSpec("sample", IPShieldCRNamespace, []string{"10.200.15.13", "10.200.15.132"})
 			err = client.Create(context.TODO(), whitelist)
 			Expect(err).NotTo(HaveOccurred())
 
@@ -299,7 +280,7 @@ var _ = Describe("controller", Ordered, func() {
 
 			time.Sleep(5 * time.Second)
 
-			whitelist = getRouteWhiteListSpec("sample", IPShieldCRNamespace, []string{"10.200.15.13", "10.200.15.132"})
+			whitelist = utils.GetRouteWhiteListSpec("sample", IPShieldCRNamespace, []string{"10.200.15.13", "10.200.15.132"})
 			err = client.Create(context.TODO(), whitelist)
 			Expect(err).NotTo(HaveOccurred())
 
@@ -340,7 +321,7 @@ var _ = Describe("controller", Ordered, func() {
 
 			time.Sleep(5 * time.Second)
 
-			whitelist = getRouteWhiteListSpec("sample", IPShieldCRNamespace, []string{"10.200.15.13", "10.200.15.132"})
+			whitelist = utils.GetRouteWhiteListSpec("sample", IPShieldCRNamespace, []string{"10.200.15.13", "10.200.15.132"})
 			err = client.Create(context.TODO(), whitelist)
 			Expect(err).NotTo(HaveOccurred())
 
@@ -380,7 +361,7 @@ var _ = Describe("controller", Ordered, func() {
 
 			time.Sleep(5 * time.Second)
 
-			whitelist = getRouteWhiteListSpec("sample", IPShieldCRNamespace, []string{"10.200.15.13", "10.200.15.132"})
+			whitelist = utils.GetRouteWhiteListSpec("sample", IPShieldCRNamespace, []string{"10.200.15.13", "10.200.15.132"})
 			err = client.Create(context.TODO(), whitelist)
 			Expect(err).NotTo(HaveOccurred())
 
@@ -420,11 +401,11 @@ var _ = Describe("controller", Ordered, func() {
 
 			time.Sleep(5 * time.Second)
 
-			whitelist = getRouteWhiteListSpec("sample", IPShieldCRNamespace, []string{"10.200.15.13", "10.200.15.132"})
+			whitelist = utils.GetRouteWhiteListSpec("sample", IPShieldCRNamespace, []string{"10.200.15.13", "10.200.15.132"})
 			err = client.Create(context.TODO(), whitelist)
 			Expect(err).NotTo(HaveOccurred())
 
-			whitelist2 := getRouteWhiteListSpec("samplex2", IPShieldCRNamespace, []string{"10.200.15.14", "10.200.15.135"})
+			whitelist2 := utils.GetRouteWhiteListSpec("samplex2", IPShieldCRNamespace, []string{"10.200.15.14", "10.200.15.135"})
 			err = client.Create(context.TODO(), whitelist2)
 			Expect(err).NotTo(HaveOccurred())
 

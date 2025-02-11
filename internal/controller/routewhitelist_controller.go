@@ -68,7 +68,7 @@ func setCondition(conditions *[]metav1.Condition, conditionType, status, reason,
 }
 
 func setSuccessful(conditions *[]metav1.Condition, conditionType string) {
-	setCondition(conditions, conditionType, string(metav1.ConditionTrue), "ReconcileSucessful", "Reconcilation successful")
+	setCondition(conditions, conditionType, string(metav1.ConditionTrue), "ReconcileSuccessful", "Reconciliation successful")
 }
 
 func setFailed(conditions *[]metav1.Condition, reconcileType string, err error) {
@@ -173,6 +173,9 @@ func (r *RouteWhitelistReconciler) handleUpdate(ctx context.Context, routes *rou
 			r.updateConfigMap(ctx, watchedRoute, cr, configMap, &patchBase)
 		}
 
+		if watchedRoute.Annotations == nil {
+			watchedRoute.Annotations = make(map[string]string)
+		}
 		watchedRoute.Annotations[WhiteListAnnotation] = mergeSet(strings.Split(watchedRoute.Annotations[WhiteListAnnotation], " "), cr.Spec.IPRanges)
 
 		err = r.Update(ctx, &watchedRoute)
@@ -262,6 +265,9 @@ func (r *RouteWhitelistReconciler) unwatchRoute(ctx context.Context, watchedRout
 	if diff == "" {
 		delete(watchedRoute.Annotations, WhiteListAnnotation)
 	} else {
+		if watchedRoute.Annotations == nil {
+			watchedRoute.Annotations = make(map[string]string)
+		}
 		watchedRoute.Annotations[WhiteListAnnotation] = diff
 	}
 	return r.Patch(ctx, &watchedRoute, patchBase)

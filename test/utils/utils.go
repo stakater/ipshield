@@ -19,14 +19,17 @@ package utils
 import (
 	"context"
 	"fmt"
+	networkingv1alpha1 "github.com/stakater/ipshield-operator/api/v1alpha1"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 
 	. "github.com/onsi/ginkgo/v2" //nolint:golint,revive
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/client-go/kubernetes"
@@ -177,7 +180,7 @@ func CreateNamespace(ctx context.Context, clientset *kubernetes.Clientset, name 
 	}
 }
 
-// Create ClusterIP Service
+// CreateClusterIPService Create ClusterIP Service
 func CreateClusterIPService(ctx context.Context, client client.Client, namespace, name string) error {
 	service := &corev1.Service{
 		ObjectMeta: metav1.ObjectMeta{
@@ -196,4 +199,21 @@ func CreateClusterIPService(ctx context.Context, client client.Client, namespace
 	}
 
 	return CreateIfNotExists(ctx, client, service, name, namespace)
+}
+
+func GetRouteWhiteListSpec(name, ns string, ips []string) *networkingv1alpha1.RouteWhitelist {
+	return &networkingv1alpha1.RouteWhitelist{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: ns,
+		},
+		Spec: networkingv1alpha1.RouteWhitelistSpec{
+			LabelSelector: &metav1.LabelSelector{
+				MatchLabels: map[string]string{
+					"ipshield": strconv.FormatBool(true),
+				},
+			},
+			IPRanges: ips,
+		},
+	}
 }
