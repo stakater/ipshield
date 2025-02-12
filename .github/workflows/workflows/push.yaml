@@ -1,0 +1,25 @@
+name: Push
+
+on:
+  push:
+    branches:
+      - main
+    paths-ignore:
+      - '*.md'
+      - 'docs/'
+      - 'examples/'
+      - 'hack/'
+
+jobs:
+  push-operator:
+    name: Push Operator
+    if: "! contains(toJSON(github.event.commits.*.message), '[skip-ci]')"
+    uses: stakater/.github/.github/workflows/operator_push.yaml@main
+    secrets:
+      SLACK_WEBHOOK_URL: ${{ secrets.STAKATER_DELIVERY_SLACK_WEBHOOK }}
+      CONTAINER_REGISTRY_URL: ghcr.io/stakater
+      CONTAINER_REGISTRY_USERNAME: stakater-user
+      CONTAINER_REGISTRY_PASSWORD: ${{ secrets.GHCR_TOKEN }}
+    with:
+      ENABLE_LINTING: true
+      ENABLE_UNIT_TESTS: true
