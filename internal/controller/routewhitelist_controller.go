@@ -135,7 +135,13 @@ func (r *RouteWhitelistReconciler) patchResourceAndStatus(ctx context.Context, o
 	if err != nil {
 		logger.Error(err, "failed to update resource")
 	}
-	return r.patchStatusWithRetries(ctx, obj, patch)
+
+	err = r.patchStatusWithRetries(ctx, obj, patch)
+	if err != nil {
+		logger.Error(err, "failed to update status")
+	}
+
+	return err
 }
 
 //+kubebuilder:rbac:groups=networking.stakater.com,resources=routewhitelists,verbs=get;list;watch;create;update;patch;delete
@@ -245,9 +251,7 @@ func (r *RouteWhitelistReconciler) handleUpdate(ctx context.Context, routes *rou
 
 	if err != nil {
 		err = r.patchResourceAndStatus(ctx, cr, patch, logger)
-		if err != nil {
-			logger.Error(err, "failed to update status")
-		}
+		// error will be logged in the patchResourceAndStatus function so ignoring it
 		return ctrl.Result{RequeueAfter: 3 * time.Minute}, nil
 	}
 
