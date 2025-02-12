@@ -91,6 +91,7 @@ var _ = Describe("RouteWhitelist Controller", Ordered, func() {
 		fakeClient = fakeclient.NewClientBuilder().
 			WithScheme(scheme).
 			WithObjects(r, whitelist, configMap).
+			WithStatusSubresource(r, whitelist, configMap).
 			Build()
 
 		reconciler = &RouteWhitelistReconciler{
@@ -111,6 +112,8 @@ var _ = Describe("RouteWhitelist Controller", Ordered, func() {
 				Name:      whitelist.Name,
 			},
 		})
+		Expect(err).NotTo(HaveOccurred())
+
 		osRoute := &v1.Route{}
 		err = fakeClient.Get(ctx, types.NamespacedName{Namespace: r.GetNamespace(), Name: r.GetName()}, osRoute)
 
@@ -127,7 +130,7 @@ var _ = Describe("RouteWhitelist Controller", Ordered, func() {
 		Expect(watchedRoutes.Data).To(BeEmpty())
 	})
 
-	It("should will test that backup is stored in configmap", func() {
+	It(" will test that backup is stored in configmap", func() {
 		By("Reconciling the created resource")
 
 		osRoute := &v1.Route{}
@@ -158,7 +161,7 @@ var _ = Describe("RouteWhitelist Controller", Ordered, func() {
 		Expect(watchedRoutes.Data).To(HaveKeyWithValue(fmt.Sprintf("%s__%s", osRoute.Namespace, osRoute.Name), "10.33.52.5"))
 	})
 
-	It("should will test that backup is stored in configmap", func() {
+	It("will test that backup is properly cleaned up in configmap", func() {
 		By("Reconciling the created resource")
 
 		osRoute := &v1.Route{}

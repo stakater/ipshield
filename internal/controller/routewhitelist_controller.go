@@ -19,6 +19,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"github.com/go-logr/logr"
 	"strings"
 	"time"
 
@@ -50,6 +51,9 @@ const (
 
 	OperatorNamespace          = "ipshield-operator-namespace"
 	WatchedRoutesConfigMapName = "watched-routes"
+
+	RetryCount    = 3
+	RetryInterval = 3 * time.Second
 )
 
 type RouteWhitelistReconciler struct {
@@ -79,6 +83,61 @@ func setWarning(conditions *[]metav1.Condition, reconcileType string, err error)
 	setCondition(conditions, reconcileType, string(metav1.ConditionFalse), "ReconcileWarning", fmt.Errorf("an error occurred %s", err).Error())
 }
 
+func (r *RouteWhitelistReconciler) patchStatusWithRetries(ctx context.Context, obj client.Object, patchBase client.Patch) error {
+	var err error
+	for i := 0; i < RetryCount; i++ {
+		err = r.Status().Patch(ctx, obj, patchBase)
+		if err == nil {
+			return nil
+		}
+
+		// get a fresh copy if conflict otherwise wait and retry
+		if errors.IsConflict(err) {
+			freshCopy := obj.DeepCopyObject().(client.Object)
+			err = r.Get(ctx, types.NamespacedName{Name: obj.GetName(), Namespace: obj.GetNamespace()}, freshCopy)
+			if err == nil {
+				obj = freshCopy
+			}
+		} else {
+			time.Sleep(RetryInterval)
+		}
+	}
+	return err
+}
+
+func (r *RouteWhitelistReconciler) patchResourceWithRetries(ctx context.Context, obj client.Object, patchBase client.Patch) error {
+	var err error
+	for i := 0; i < RetryCount; i++ {
+		err = r.Patch(ctx, obj, patchBase)
+		if err == nil {
+			return nil
+		}
+
+		// get a fresh copy if conflict otherwise wait and retry
+		if errors.IsConflict(err) {
+			freshCopy := obj.DeepCopyObject().(client.Object)
+			err = r.Get(ctx, types.NamespacedName{Name: obj.GetName(), Namespace: obj.GetNamespace()}, freshCopy)
+			if err != nil {
+				obj = freshCopy
+			}
+		} else {
+			time.Sleep(RetryInterval)
+		}
+	}
+	return err
+}
+
+func (r *RouteWhitelistReconciler) patchResourceAndStatus(ctx context.Context, obj client.Object, patch client.Patch, logger logr.Logger) error {
+	// Sending a deep copy because the object will be updated according to the remote server state
+	// so we need to keep the original object for the status update otherwise conditions will be lost
+	err := r.patchResourceWithRetries(ctx, obj.DeepCopyObject().(client.Object), patch)
+
+	if err != nil {
+		logger.Error(err, "failed to update resource")
+	}
+	return r.patchStatusWithRetries(ctx, obj, patch)
+}
+
 //+kubebuilder:rbac:groups=networking.stakater.com,resources=routewhitelists,verbs=get;list;watch;create;update;patch;delete
 //+kubebuilder:rbac:groups=networking.stakater.com,resources=routewhitelists/status,verbs=get;update;patch
 //+kubebuilder:rbac:groups=networking.stakater.com,resources=routewhitelists/finalizers,verbs=update
@@ -95,50 +154,46 @@ func (r *RouteWhitelistReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 	if err != nil {
 		if errors.IsNotFound(err) {
 			return ctrl.Result{}, nil
-		} else {
-			return ctrl.Result{}, err
 		}
+		return ctrl.Result{}, err
 	}
+	patchBase := client.MergeFrom(cr.DeepCopy())
 
-	crPatchBase := client.MergeFrom(cr.DeepCopy())
 	apimeta.RemoveStatusCondition(&cr.Status.Conditions, "Admitted")
 	apimeta.RemoveStatusCondition(&cr.Status.Conditions, "Updating")
 	setCondition(&cr.Status.Conditions, "WhiteListReconciling", "True", "ProcessingWhitelist", "Searching for routes")
-	err = r.Status().Patch(ctx, cr, crPatchBase)
 
 	// Get routes
 	routes := &route.RouteList{}
 
-	err = r.Client.List(ctx, routes, &client.ListOptions{
+	err = r.List(ctx, routes, &client.ListOptions{
 		LabelSelector: labels.SelectorFromSet(cr.Spec.LabelSelector.MatchLabels),
 	})
 
 	if err != nil {
 		setFailed(&cr.Status.Conditions, "RouteFetchError", err)
-		return ctrl.Result{}, err
+		return ctrl.Result{}, r.patchStatusWithRetries(ctx, cr, patchBase)
 	} else {
 		apimeta.RemoveStatusCondition(&cr.Status.Conditions, "RouteFetchError")
 	}
 
 	// Handle delete
 	if cr.DeletionTimestamp != nil {
-		return r.handleDelete(ctx, routes, cr, &crPatchBase)
+		return r.handleDelete(ctx, routes, cr, patchBase, logger)
 	} else {
 		controllerutil.AddFinalizer(cr, RouteWhitelistFinalizer)
 	}
 
 	if len(routes.Items) == 0 {
 		setSuccessful(&cr.Status.Conditions, "NoRoutesFound")
-		_ = r.Patch(ctx, cr, crPatchBase)
-		return ctrl.Result{}, nil
+		return ctrl.Result{}, r.patchResourceAndStatus(ctx, cr, patchBase, logger)
 	}
-	_ = r.Patch(ctx, cr, crPatchBase)
-	return r.handleUpdate(ctx, routes, cr)
+
+	return r.handleUpdate(ctx, routes, cr, patchBase, logger)
 }
 
-func (r *RouteWhitelistReconciler) handleUpdate(ctx context.Context, routes *route.RouteList, cr *networkingv1alpha1.RouteWhitelist) (ctrl.Result, error) {
+func (r *RouteWhitelistReconciler) handleUpdate(ctx context.Context, routes *route.RouteList, cr *networkingv1alpha1.RouteWhitelist, patch client.Patch, logger logr.Logger) (ctrl.Result, error) {
 	var err error
-	patchBase := client.MergeFrom(cr.DeepCopy())
 
 	apimeta.RemoveStatusCondition(&cr.Status.Conditions, "ConfigMapUpdateFailure")
 	apimeta.RemoveStatusCondition(&cr.Status.Conditions, "RouteUpdateFailure")
@@ -148,59 +203,63 @@ func (r *RouteWhitelistReconciler) handleUpdate(ctx context.Context, routes *rou
 
 	if err != nil {
 		setWarning(&cr.Status.Conditions, "ConfigMapFetchFailure", fmt.Errorf("failed to get config map %e", err))
-		_ = r.Status().Patch(ctx, cr, patchBase)
 	}
 
 	for _, watchedRoute := range routes.Items {
-
+		routePatchBase := client.MergeFrom(watchedRoute.DeepCopy())
 		apimeta.RemoveStatusCondition(&cr.Status.Conditions, "Updating") // removing previous route condition
 		setCondition(&cr.Status.Conditions, "Updating", "True", "UpdatingRoute", fmt.Sprintf("Updating route '%s'", watchedRoute.Name))
 
-		err = r.Status().Patch(ctx, cr, patchBase)
-
 		if val, ok := watchedRoute.Labels[IPShieldWatchedResourceLabel]; !ok || val != "true" {
-			err = r.unwatchRoute(ctx, watchedRoute, cr, configMapAvailable, configMap)
+			err = r.unwatchRoute(ctx, watchedRoute, client.MergeFrom(watchedRoute.DeepCopy()), cr, configMap, configMapAvailable, logger)
+
 			if err != nil {
 				apimeta.RemoveStatusCondition(&cr.Status.Conditions, "Updating")
 				setFailed(&cr.Status.Conditions, "RouteUpdateFailure", err)
-				_ = r.Status().Patch(ctx, cr, patchBase)
-				return ctrl.Result{RequeueAfter: 3 * time.Minute}, nil
+				logger.Error(err, "failed to unwatch route")
 			}
 			continue
 		}
 
 		if configMapAvailable {
-			r.updateConfigMap(ctx, watchedRoute, cr, configMap, &patchBase)
+			r.updateConfigMap(ctx, watchedRoute, cr, configMap)
 		}
 
 		if watchedRoute.Annotations == nil {
 			watchedRoute.Annotations = make(map[string]string)
 		}
+
 		watchedRoute.Annotations[WhiteListAnnotation] = mergeSet(strings.Split(watchedRoute.Annotations[WhiteListAnnotation], " "), cr.Spec.IPRanges)
 
-		err = r.Update(ctx, &watchedRoute)
+		err = r.patchResourceWithRetries(ctx, &watchedRoute, routePatchBase)
 
 		if err != nil {
 			apimeta.RemoveStatusCondition(&cr.Status.Conditions, "Updating")
 			setFailed(&cr.Status.Conditions, "RouteUpdateFailure", err)
-			_ = r.Status().Patch(ctx, cr, patchBase)
-			return ctrl.Result{
-				RequeueAfter: 3 * time.Minute,
-			}, nil
+			logger.Error(err, "failed to update route")
 		}
 	}
+
 	apimeta.RemoveStatusCondition(&cr.Status.Conditions, "Updating")
 	apimeta.RemoveStatusCondition(&cr.Status.Conditions, "WhiteListReconciling")
-	setSuccessful(&cr.Status.Conditions, "Admitted")
 
-	err = r.Status().Patch(ctx, cr, patchBase)
-	return ctrl.Result{}, r.Patch(ctx, cr, patchBase)
+	if err != nil {
+		err = r.patchResourceAndStatus(ctx, cr, patch, logger)
+		if err != nil {
+			logger.Error(err, "failed to update status")
+		}
+		return ctrl.Result{RequeueAfter: 3 * time.Minute}, nil
+	}
+
+	setSuccessful(&cr.Status.Conditions, "Admitted")
+	return ctrl.Result{}, r.patchResourceAndStatus(ctx, cr, patch, logger)
 }
 
-func (r *RouteWhitelistReconciler) updateConfigMap(ctx context.Context, watchedRoute route.Route, cr *networkingv1alpha1.RouteWhitelist, configMap *corev1.ConfigMap, patchBase *client.Patch) {
+func (r *RouteWhitelistReconciler) updateConfigMap(ctx context.Context, watchedRoute route.Route, cr *networkingv1alpha1.RouteWhitelist, configMap *corev1.ConfigMap) {
 	var err error
 	apimeta.RemoveStatusCondition(&cr.Status.Conditions, "ConfigMapUpdateFailure")
 
+	patchBase := client.MergeFrom(configMap.DeepCopy())
 	routeFullName := fmt.Sprintf("%s__%s", watchedRoute.Namespace, watchedRoute.Name)
 
 	if _, ok := configMap.Data[routeFullName]; ok {
@@ -215,40 +274,50 @@ func (r *RouteWhitelistReconciler) updateConfigMap(ctx context.Context, watchedR
 		configMap.Data[routeFullName] = originalWhitelist
 	}
 
-	if err = r.Update(ctx, configMap); err != nil {
+	if err = r.patchResourceWithRetries(ctx, configMap, patchBase); err != nil {
 		apimeta.RemoveStatusCondition(&cr.Status.Conditions, "Updating")
 		setWarning(&cr.Status.Conditions, "ConfigMapUpdateFailure", err)
-		_ = r.Status().Patch(ctx, cr, *patchBase)
-		*patchBase = client.MergeFrom(cr.DeepCopy())
 	}
 }
 
-func (r *RouteWhitelistReconciler) handleDelete(ctx context.Context, routes *route.RouteList, cr *networkingv1alpha1.RouteWhitelist, crPatchBase *client.Patch) (ctrl.Result, error) {
+func (r *RouteWhitelistReconciler) handleDelete(ctx context.Context, routes *route.RouteList, cr *networkingv1alpha1.RouteWhitelist, patch client.Patch, logger logr.Logger) (ctrl.Result, error) {
 	var err error
+	apimeta.RemoveStatusCondition(&cr.Status.Conditions, "RouteDeleteFailure")
+
 	configMap := &corev1.ConfigMap{}
 	configMapAvailable, err := r.getConfigMap(ctx, configMap)
 
 	if err != nil {
 		setWarning(&cr.Status.Conditions, "ConfigMapFetchFailure", fmt.Errorf("failed to get config map %e", err))
-		_ = r.Status().Patch(ctx, cr, *crPatchBase)
 	}
 
 	for _, watchedRoute := range routes.Items {
-		if err = r.unwatchRoute(ctx, watchedRoute, cr, configMapAvailable, configMap); err != nil {
-			return ctrl.Result{RequeueAfter: 3 * time.Minute}, err
+		routePatch := client.MergeFrom(watchedRoute.DeepCopy())
+		if err = r.unwatchRoute(ctx, watchedRoute, routePatch, cr, configMap, configMapAvailable, logger); err != nil {
+			setFailed(&cr.Status.Conditions, "RouteDeleteFailure", err)
+			logger.Error(err, "failed to unwatch route")
 		}
 	}
 
-	setSuccessful(&cr.Status.Conditions, "Deleted")
-	err = r.Status().Patch(ctx, cr, *crPatchBase)
+	if err != nil {
+		err = r.patchStatusWithRetries(ctx, cr, patch)
+		if err != nil {
+			logger.Error(err, "failed to update status")
+		}
+		return ctrl.Result{RequeueAfter: 3 * time.Minute}, nil
+	}
 
+	setSuccessful(&cr.Status.Conditions, "Deleted")
 	controllerutil.RemoveFinalizer(cr, RouteWhitelistFinalizer)
-	return ctrl.Result{}, r.Patch(ctx, cr, *crPatchBase)
+
+	return ctrl.Result{}, r.patchResourceAndStatus(ctx, cr, patch, logger)
 }
 
-func (r *RouteWhitelistReconciler) unwatchRoute(ctx context.Context, watchedRoute route.Route, cr *networkingv1alpha1.RouteWhitelist, configMapAvailable bool, configMap *corev1.ConfigMap) error {
-	patchBase := client.MergeFrom(watchedRoute.DeepCopy())
+func (r *RouteWhitelistReconciler) unwatchRoute(ctx context.Context, watchedRoute route.Route, routePatch client.Patch,
+	cr *networkingv1alpha1.RouteWhitelist, configMap *corev1.ConfigMap, configMapAvailable bool, logger logr.Logger) error {
 	routeFullName := fmt.Sprintf("%s__%s", watchedRoute.Namespace, watchedRoute.Name)
+
+	configMapPatch := client.MergeFrom(configMap.DeepCopy())
 
 	diff := diffSet(strings.Split(watchedRoute.Annotations[WhiteListAnnotation], " "), cr.Spec.IPRanges)
 	configMapValues := configMap.Data[routeFullName]
@@ -259,7 +328,6 @@ func (r *RouteWhitelistReconciler) unwatchRoute(ctx context.Context, watchedRout
 
 	if diffSet(strings.Split(diff, " "), strings.Split(configMapValues, " ")) == "" {
 		delete(configMap.Data, routeFullName)
-		_ = r.Update(ctx, configMap)
 	}
 
 	if diff == "" {
@@ -270,7 +338,15 @@ func (r *RouteWhitelistReconciler) unwatchRoute(ctx context.Context, watchedRout
 		}
 		watchedRoute.Annotations[WhiteListAnnotation] = diff
 	}
-	return r.Patch(ctx, &watchedRoute, patchBase)
+
+	if configMapAvailable {
+		err := r.patchResourceWithRetries(ctx, configMap, configMapPatch)
+		if err != nil {
+			logger.Error(err, "failed to update config map")
+		}
+	}
+
+	return r.patchResourceWithRetries(ctx, &watchedRoute, routePatch)
 }
 
 func (r *RouteWhitelistReconciler) getConfigMap(ctx context.Context, configMap *corev1.ConfigMap) (bool, error) {
