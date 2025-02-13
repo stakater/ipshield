@@ -19,6 +19,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"os"
 	"strings"
 
 	"github.com/go-logr/logr"
@@ -48,13 +49,14 @@ const (
 	RouteWhitelistFinalizer      = "ip-whitelist.stakater.cloud/finalizer"
 	WhiteListAnnotation          = "haproxy.router.openshift.io/ip_whitelist"
 
-	OperatorNamespace          = "ipshield-operator-namespace"
+	DefaultWatchNamespace      = "ipshield-cr"
 	WatchedRoutesConfigMapName = "watched-routes"
 )
 
 type RouteWhitelistReconciler struct {
 	client.Client
-	Scheme *runtime.Scheme
+	Scheme         *runtime.Scheme
+	WatchNamespace string
 }
 
 func setCondition(conditions *[]metav1.Condition, conditionType, status, reason, message string) {
@@ -77,6 +79,17 @@ func setFailed(conditions *[]metav1.Condition, reconcileType string, err error) 
 
 func setWarning(conditions *[]metav1.Condition, reconcileType string, err error) {
 	setCondition(conditions, reconcileType, string(metav1.ConditionFalse), "ReconcileWarning", fmt.Errorf("an error occurred %s", err).Error())
+}
+
+func GetWatchNamespace() string {
+	var watchNamespaceEnvVar = "WATCH_NAMESPACE"
+
+	ns, found := os.LookupEnv(watchNamespaceEnvVar)
+	if !found {
+		// fallback to default
+		ns = DefaultWatchNamespace
+	}
+	return ns
 }
 
 func (r *RouteWhitelistReconciler) patchResourceAndStatus(ctx context.Context, obj client.Object, patch client.Patch, logger logr.Logger) error {
@@ -154,7 +167,7 @@ func (r *RouteWhitelistReconciler) handleUpdate(ctx context.Context, routes *rou
 	apimeta.RemoveStatusCondition(&cr.Status.Conditions, "RouteUpdateFailure")
 
 	configMap := &corev1.ConfigMap{}
-	configMapAvailable, err := r.getConfigMap(ctx, configMap)
+	err := r.getConfigMap(ctx, configMap, cr)
 
 	if err != nil {
 		setWarning(&cr.Status.Conditions, "ConfigMapFetchFailure", fmt.Errorf("failed to get config map %e", err))
@@ -167,7 +180,7 @@ func (r *RouteWhitelistReconciler) handleUpdate(ctx context.Context, routes *rou
 		setCondition(&cr.Status.Conditions, "Updating", "True", "UpdatingRoute", fmt.Sprintf("Updating route '%s'", watchedRoute.Name))
 
 		if val, ok := watchedRoute.Labels[IPShieldWatchedResourceLabel]; !ok || val != "true" {
-			err = r.unwatchRoute(ctx, watchedRoute, client.MergeFrom(watchedRoute.DeepCopy()), cr, configMap, configMapAvailable, logger)
+			err = r.unwatchRoute(ctx, watchedRoute, client.MergeFrom(watchedRoute.DeepCopy()), cr, configMap, logger)
 
 			if err != nil {
 				apimeta.RemoveStatusCondition(&cr.Status.Conditions, "Updating")
@@ -178,10 +191,8 @@ func (r *RouteWhitelistReconciler) handleUpdate(ctx context.Context, routes *rou
 			continue
 		}
 
-		if configMapAvailable {
-			if err = r.updateConfigMap(ctx, watchedRoute, cr, configMap); err != nil {
-				return ctrl.Result{}, err
-			}
+		if err = r.updateConfigMap(ctx, watchedRoute, cr, configMap); err != nil {
+			return ctrl.Result{}, err
 		}
 
 		if watchedRoute.Annotations == nil {
@@ -229,19 +240,19 @@ func (r *RouteWhitelistReconciler) updateConfigMap(ctx context.Context, watchedR
 }
 
 func (r *RouteWhitelistReconciler) handleDelete(ctx context.Context, routes *route.RouteList, cr *networkingv1alpha1.RouteWhitelist, patch client.Patch, logger logr.Logger) (ctrl.Result, error) {
-	var err error
 	apimeta.RemoveStatusCondition(&cr.Status.Conditions, "RouteDeleteFailure")
 
 	configMap := &corev1.ConfigMap{}
-	configMapAvailable, err := r.getConfigMap(ctx, configMap)
+	err := r.getConfigMap(ctx, configMap, cr)
 
 	if err != nil {
-		setWarning(&cr.Status.Conditions, "ConfigMapFetchFailure", fmt.Errorf("failed to get config map %e", err))
+		setWarning(&cr.Status.Conditions, "ConfigMapFetchFailure", fmt.Errorf("failed to get config map %s", err))
+		return r.patchErrorStatus(ctx, cr, patch, err)
 	}
 
 	for _, watchedRoute := range routes.Items {
 		routePatch := client.MergeFrom(watchedRoute.DeepCopy())
-		if err = r.unwatchRoute(ctx, watchedRoute, routePatch, cr, configMap, configMapAvailable, logger); err != nil {
+		if err = r.unwatchRoute(ctx, watchedRoute, routePatch, cr, configMap, logger); err != nil {
 			setFailed(&cr.Status.Conditions, "RouteDeleteFailure", err)
 			return r.patchErrorStatus(ctx, cr, patch, err)
 		}
@@ -250,7 +261,17 @@ func (r *RouteWhitelistReconciler) handleDelete(ctx context.Context, routes *rou
 	setSuccessful(&cr.Status.Conditions, "Deleted")
 	controllerutil.RemoveFinalizer(cr, RouteWhitelistFinalizer)
 
+	cfgPatch := client.MergeFrom(configMap.DeepCopy())
+	err = controllerutil.RemoveOwnerReference(cr, configMap, r.Scheme)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	if err = r.Patch(ctx, configMap, cfgPatch); err != nil {
+		return ctrl.Result{}, err
+	}
+
 	return ctrl.Result{}, r.patchResourceAndStatus(ctx, cr, patch, logger)
+
 }
 
 func (r *RouteWhitelistReconciler) patchErrorStatus(ctx context.Context, cr *networkingv1alpha1.RouteWhitelist, patch client.Patch, err error) (ctrl.Result, error) {
@@ -263,7 +284,8 @@ func (r *RouteWhitelistReconciler) patchErrorStatus(ctx context.Context, cr *net
 }
 
 func (r *RouteWhitelistReconciler) unwatchRoute(ctx context.Context, watchedRoute route.Route, routePatch client.Patch,
-	cr *networkingv1alpha1.RouteWhitelist, configMap *corev1.ConfigMap, configMapAvailable bool, logger logr.Logger) error {
+	cr *networkingv1alpha1.RouteWhitelist, configMap *corev1.ConfigMap, logger logr.Logger) error {
+
 	routeFullName := fmt.Sprintf("%s__%s", watchedRoute.Namespace, watchedRoute.Name)
 
 	configMapPatch := client.MergeFrom(configMap.DeepCopy())
@@ -288,36 +310,57 @@ func (r *RouteWhitelistReconciler) unwatchRoute(ctx context.Context, watchedRout
 		watchedRoute.Annotations[WhiteListAnnotation] = diff
 	}
 
-	if configMapAvailable {
-		err := r.Patch(ctx, configMap, configMapPatch)
-		if err != nil {
-			logger.Error(err, "failed to update config map")
-			return err
-		}
+	err := r.Patch(ctx, configMap, configMapPatch)
+	if err != nil {
+		logger.Error(err, "failed to update config map")
+		return err
 	}
 
 	return r.Patch(ctx, &watchedRoute, routePatch)
 }
 
-func (r *RouteWhitelistReconciler) getConfigMap(ctx context.Context, configMap *corev1.ConfigMap) (bool, error) {
-	err := r.Get(ctx, types.NamespacedName{Name: WatchedRoutesConfigMapName, Namespace: OperatorNamespace}, configMap)
-
-	if err != nil && errors.IsNotFound(err) {
-		err = r.createConfigMap(ctx, configMap)
-		if err != nil {
-			return false, err
-		}
-		err = r.Get(ctx, types.NamespacedName{Name: WatchedRoutesConfigMapName, Namespace: OperatorNamespace}, configMap)
+func (r *RouteWhitelistReconciler) getConfigMap(ctx context.Context, configMap *corev1.ConfigMap, cr *networkingv1alpha1.RouteWhitelist) error {
+	err := r.Get(ctx, types.NamespacedName{Name: WatchedRoutesConfigMapName, Namespace: r.WatchNamespace}, configMap)
+	if err == nil {
+		return r.setOwnerReferenceIfNotExists(ctx, configMap, cr)
 	}
 
-	return err == nil, err
+	if errors.IsNotFound(err) {
+		err = r.createConfigMap(ctx, cr)
+		if err == nil {
+			err = r.Get(ctx, types.NamespacedName{Name: WatchedRoutesConfigMapName, Namespace: r.WatchNamespace}, configMap)
+		}
+	}
+
+	return err
 }
 
-func (r *RouteWhitelistReconciler) createConfigMap(ctx context.Context, configMap *corev1.ConfigMap) error {
-	configMap.ObjectMeta.Name = WatchedRoutesConfigMapName
-	configMap.ObjectMeta.Namespace = OperatorNamespace
+func (r *RouteWhitelistReconciler) createConfigMap(ctx context.Context, cr *networkingv1alpha1.RouteWhitelist) error {
+	configMap := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      WatchedRoutesConfigMapName,
+			Namespace: r.WatchNamespace,
+		},
+	}
 
-	return r.Client.Create(ctx, configMap)
+	err := controllerutil.SetOwnerReference(cr, configMap, r.Scheme)
+	if err != nil {
+		return err
+	}
+
+	return r.Create(ctx, configMap)
+}
+
+func (r *RouteWhitelistReconciler) setOwnerReferenceIfNotExists(ctx context.Context, configMap *corev1.ConfigMap, cr *networkingv1alpha1.RouteWhitelist) error {
+	ok, err := controllerutil.HasOwnerReference(configMap.OwnerReferences, cr, r.Scheme)
+	if err == nil && !ok {
+		patchBase := client.MergeFrom(configMap.DeepCopy())
+		err = controllerutil.SetOwnerReference(cr, configMap, r.Scheme)
+		if err == nil {
+			return r.Patch(ctx, configMap, patchBase)
+		}
+	}
+	return err
 }
 
 func mergeSet(s1 []string, s2 []string) string {

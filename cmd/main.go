@@ -48,19 +48,6 @@ var (
 	setupLog = ctrl.Log.WithName("setup")
 )
 
-const DefaultWatchedNamespace = "ipshield-cr" // operator will watch for CRDs in this namespace only
-
-func getWatchNamespace() string {
-	var watchNamespaceEnvVar = "WATCH_NAMESPACE"
-
-	ns, found := os.LookupEnv(watchNamespaceEnvVar)
-	if !found {
-		// fallback to default
-		ns = DefaultWatchedNamespace
-	}
-	return ns
-}
-
 func init() {
 	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
 	utilruntime.Must(route.AddToScheme(scheme))
@@ -111,7 +98,7 @@ func main() {
 		TLSOpts: tlsOpts,
 	})
 
-	watchNamespace := getWatchNamespace()
+	watchNamespace := controller.GetWatchNamespace()
 
 	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
 		Scheme: scheme,
@@ -155,8 +142,9 @@ func main() {
 	}
 
 	if err = (&controller.RouteWhitelistReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
+		Client:         mgr.GetClient(),
+		Scheme:         mgr.GetScheme(),
+		WatchNamespace: watchNamespace,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "RouteWhitelist")
 		os.Exit(1)

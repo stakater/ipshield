@@ -31,6 +31,7 @@ import (
 	scheme2 "k8s.io/client-go/kubernetes/scheme"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	fakeclient "sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	networkingv1alpha1 "github.com/stakater/ipshield-operator/api/v1alpha1"
@@ -82,12 +83,12 @@ var _ = Describe("RouteWhitelist Controller", Ordered, func() {
 			"kind":       "ConfigMap",
 			"metadata": map[string]interface{}{
 				"name":      "watched-routes",
-				"namespace": "ipshield-operator-namespace",
+				"namespace": DefaultWatchNamespace,
 			},
 			"data": nil,
 		})
 
-		whitelist = utils.GetRouteWhiteListSpec("test-route", "default", []string{"10.100.123.24"})
+		whitelist = utils.GetRouteWhiteListSpec("test-route", DefaultWatchNamespace, []string{"10.100.123.24"})
 
 		fakeClient = fakeclient.NewClientBuilder().
 			WithScheme(scheme).
@@ -96,8 +97,9 @@ var _ = Describe("RouteWhitelist Controller", Ordered, func() {
 			Build()
 
 		reconciler = &RouteWhitelistReconciler{
-			Client: fakeClient,
-			Scheme: scheme,
+			Client:         fakeClient,
+			Scheme:         scheme,
+			WatchNamespace: DefaultWatchNamespace,
 		}
 	})
 
@@ -127,8 +129,11 @@ var _ = Describe("RouteWhitelist Controller", Ordered, func() {
 		Expect(whitelist.Status.Conditions[0].Type).Should(Equal("Admitted"))
 
 		watchedRoutes := &corev1.ConfigMap{}
-		Expect(fakeClient.Get(ctx, types.NamespacedName{Namespace: OperatorNamespace, Name: WatchedRoutesConfigMapName}, watchedRoutes)).Should(Succeed())
+		Expect(fakeClient.Get(ctx, types.NamespacedName{Namespace: DefaultWatchNamespace, Name: WatchedRoutesConfigMapName}, watchedRoutes)).Should(Succeed())
 		Expect(watchedRoutes.Data).To(BeEmpty())
+		ok, err := controllerutil.HasOwnerReference(watchedRoutes.OwnerReferences, whitelist, scheme2.Scheme)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(ok).To(BeTrue())
 	})
 
 	It(" will test that backup is stored in configmap", func() {
@@ -159,7 +164,7 @@ var _ = Describe("RouteWhitelist Controller", Ordered, func() {
 		Expect(whitelist.Status.Conditions[0].Type).Should(Equal("Admitted"))
 
 		watchedRoutes := &corev1.ConfigMap{}
-		Expect(fakeClient.Get(ctx, types.NamespacedName{Namespace: OperatorNamespace, Name: WatchedRoutesConfigMapName}, watchedRoutes)).Should(Succeed())
+		Expect(fakeClient.Get(ctx, types.NamespacedName{Namespace: DefaultWatchNamespace, Name: WatchedRoutesConfigMapName}, watchedRoutes)).Should(Succeed())
 		Expect(watchedRoutes.Data).To(HaveKeyWithValue(fmt.Sprintf("%s__%s", osRoute.Namespace, osRoute.Name), "10.33.52.5"))
 	})
 
@@ -191,7 +196,7 @@ var _ = Describe("RouteWhitelist Controller", Ordered, func() {
 		Expect(whitelist.Status.Conditions[0].Type).Should(Equal("Admitted"))
 
 		watchedRoutes := &corev1.ConfigMap{}
-		Expect(fakeClient.Get(ctx, types.NamespacedName{Namespace: OperatorNamespace, Name: WatchedRoutesConfigMapName}, watchedRoutes)).Should(Succeed())
+		Expect(fakeClient.Get(ctx, types.NamespacedName{Namespace: DefaultWatchNamespace, Name: WatchedRoutesConfigMapName}, watchedRoutes)).Should(Succeed())
 		Expect(watchedRoutes.Data).To(HaveKeyWithValue(fmt.Sprintf("%s__%s", osRoute.Namespace, osRoute.Name), "10.33.52.5"))
 
 		Expect(fakeClient.Delete(ctx, whitelist)).Should(Succeed())
@@ -209,8 +214,11 @@ var _ = Describe("RouteWhitelist Controller", Ordered, func() {
 		Expect(osRoute.Annotations).To(HaveKey(WhiteListAnnotation))
 		Expect(strings.Split(osRoute.Annotations[WhiteListAnnotation], " ")).Should(ConsistOf([]string{"10.33.52.5"}))
 
-		Expect(fakeClient.Get(ctx, types.NamespacedName{Namespace: OperatorNamespace, Name: WatchedRoutesConfigMapName}, watchedRoutes)).Should(Succeed())
+		Expect(fakeClient.Get(ctx, types.NamespacedName{Namespace: DefaultWatchNamespace, Name: WatchedRoutesConfigMapName}, watchedRoutes)).Should(Succeed())
 		Expect(watchedRoutes.Data).ShouldNot(HaveKey(fmt.Sprintf("%s__%s", osRoute.Namespace, osRoute.Name)))
 
+		ok, err := controllerutil.HasOwnerReference(watchedRoutes.OwnerReferences, whitelist, scheme2.Scheme)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(ok).To(BeFalse())
 	})
 })
