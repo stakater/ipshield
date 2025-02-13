@@ -17,12 +17,24 @@ limitations under the License.
 package utils
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 
 	. "github.com/onsi/ginkgo/v2" //nolint:golint,revive
+	networkingv1alpha1 "github.com/stakater/ipshield-operator/api/v1alpha1"
+	v1 "k8s.io/api/apps/v1"
+	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
+	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/intstr"
+	"k8s.io/client-go/kubernetes"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
 const (
@@ -35,7 +47,7 @@ const (
 )
 
 func warnError(err error) {
-	fmt.Fprintf(GinkgoWriter, "warning: %v\n", err)
+	_, _ = fmt.Fprintf(GinkgoWriter, "warning: %v\n", err)
 }
 
 // InstallPrometheusOperator installs the prometheus Operator to be used to export the enabled metrics.
@@ -52,12 +64,12 @@ func Run(cmd *exec.Cmd) ([]byte, error) {
 	cmd.Dir = dir
 
 	if err := os.Chdir(cmd.Dir); err != nil {
-		fmt.Fprintf(GinkgoWriter, "chdir dir: %s\n", err)
+		_, _ = fmt.Fprintf(GinkgoWriter, "chdir dir: %s\n", err)
 	}
 
 	cmd.Env = append(os.Environ(), "GO111MODULE=on")
 	command := strings.Join(cmd.Args, " ")
-	fmt.Fprintf(GinkgoWriter, "running: %s\n", command)
+	_, _ = fmt.Fprintf(GinkgoWriter, "running: %s\n", command)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return output, fmt.Errorf("%s failed with error: (%v) %s", command, err, string(output))
@@ -137,4 +149,124 @@ func GetProjectDir() (string, error) {
 	}
 	wd = strings.Replace(wd, "/test/e2e", "", -1)
 	return wd, nil
+}
+
+func CreateIfNotExists(ctx context.Context, client client.Client,
+	object client.Object, objName, objNamespace string) error {
+	err := client.Get(ctx, types.NamespacedName{Name: objName, Namespace: objNamespace}, object)
+	if err != nil {
+		if errors.IsNotFound(err) {
+			object.SetName(objName)
+			object.SetNamespace(objNamespace)
+			err = client.Create(ctx, object)
+			if err != nil {
+				return err
+			}
+		} else {
+			return err
+		}
+	}
+	return nil
+}
+
+func DeleteIfExists(ctx context.Context, client client.Client, object client.Object) error {
+	err := client.Delete(ctx, object)
+	if err != nil && !errors.IsNotFound(err) {
+		return err
+	}
+	return nil
+}
+
+func CreateNamespace(ctx context.Context, clientset *kubernetes.Clientset, name string) error {
+	ns := &corev1.Namespace{
+		ObjectMeta: metav1.ObjectMeta{Name: name},
+	}
+	_, err := clientset.CoreV1().Namespaces().Create(ctx, ns, metav1.CreateOptions{})
+	if err == nil || errors.IsAlreadyExists(err) {
+		fmt.Println("Namespace available: ", name)
+		return nil
+	} else {
+		return err
+	}
+}
+
+func DeleteNamespaceIfExists(ctx context.Context, clientset *kubernetes.Clientset, name string) error {
+	err := clientset.CoreV1().Namespaces().Delete(ctx, name, metav1.DeleteOptions{})
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
+// CreateClusterIPService Create ClusterIP Service
+func CreateClusterIPService(ctx context.Context, client client.Client, namespace, name string) error {
+	service := &corev1.Service{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: namespace,
+		},
+		Spec: corev1.ServiceSpec{
+			Selector: map[string]string{"app": "nginx"},
+			Ports: []corev1.ServicePort{{
+				Protocol:   corev1.ProtocolTCP,
+				Port:       8000,
+				TargetPort: intstr.FromInt32(80),
+			}},
+			Type: corev1.ServiceTypeClusterIP,
+		},
+	}
+
+	return CreateIfNotExists(ctx, client, service, name, namespace)
+}
+
+func GetRouteWhiteListSpec(name, ns string, ips []string) *networkingv1alpha1.RouteWhitelist {
+	return &networkingv1alpha1.RouteWhitelist{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: ns,
+		},
+		Spec: networkingv1alpha1.RouteWhitelistSpec{
+			LabelSelector: &metav1.LabelSelector{
+				MatchLabels: map[string]string{
+					"ipshield": strconv.FormatBool(true),
+				},
+			},
+			IPRanges: ips,
+		},
+	}
+}
+
+func CreateNginxDeployment(ctx context.Context, client client.Client, name, namespace string) error {
+	replicas := int32(1)
+
+	deployment := &v1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: namespace,
+		},
+		Spec: v1.DeploymentSpec{
+			Replicas: &replicas,
+			Selector: &metav1.LabelSelector{
+				MatchLabels: map[string]string{"app": "nginx"},
+			},
+			Template: corev1.PodTemplateSpec{
+				ObjectMeta: metav1.ObjectMeta{
+					Labels: map[string]string{"app": "nginx"},
+				},
+				Spec: corev1.PodSpec{
+					Containers: []corev1.Container{
+						{
+							Name:  "nginx",
+							Image: "nginx:1.14.2",
+							Ports: []corev1.ContainerPort{{
+								ContainerPort: 80,
+							}},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	return CreateIfNotExists(ctx, client, deployment, name, namespace)
 }

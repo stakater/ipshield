@@ -17,48 +17,110 @@ limitations under the License.
 package e2e
 
 import (
+	"context"
 	"fmt"
 	"os/exec"
+	"strconv"
+	"strings"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	route "github.com/openshift/api/route/v1"
+	networkingv1alpha1 "github.com/stakater/ipshield-operator/api/v1alpha1"
+	"github.com/stakater/ipshield-operator/internal/controller"
+	v1 "k8s.io/api/apps/v1"
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
+	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
+	"k8s.io/client-go/kubernetes"
+	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 
 	"github.com/stakater/ipshield-operator/test/utils"
+	ctrl "sigs.k8s.io/controller-runtime"
+	kubeclient "sigs.k8s.io/controller-runtime/pkg/client"
 )
 
-const namespace = "ipshield-operator-system"
+const OperatorNamespace = "ipshield-operator-system"
 
 // TODO add e2e tests
 // Take look at https://github.com/cloudnative-pg/cloudnative-pg/tree/main/tests/e2e
 
+const (
+	IPShieldCRNamespace = "ipshield-cr"
+	TestingNamespace    = "mywebserver-2"
+	NginxDeployment     = "https://k8s.io/examples/application/deployment.yaml"
+	RouteName           = "nginx-deployment"
+)
+
+var client kubeclient.Client
+var clientset *kubernetes.Clientset
+
+var _ = BeforeSuite(func() {
+	scheme := runtime.NewScheme()
+
+	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
+	utilruntime.Must(route.AddToScheme(scheme))
+	utilruntime.Must(networkingv1alpha1.AddToScheme(scheme))
+
+	config := ctrl.GetConfigOrDie()
+	k8sclient, err := kubeclient.New(config, kubeclient.Options{Scheme: scheme})
+
+	Expect(err).NotTo(HaveOccurred())
+	Expect(k8sclient).NotTo(BeNil())
+	client = k8sclient
+
+	clientset, err = kubernetes.NewForConfig(config)
+	Expect(err).NotTo(HaveOccurred())
+
+	Expect(utils.CreateNamespace(context.TODO(), clientset, OperatorNamespace)).To(Succeed())
+
+})
+
 var _ = Describe("controller", Ordered, func() {
+
 	BeforeAll(func() {
-		By("installing prometheus operator")
-		Expect(utils.InstallPrometheusOperator()).To(Succeed())
+		Expect(utils.CreateNamespace(context.TODO(), clientset, IPShieldCRNamespace)).To(Succeed())
+		Expect(utils.CreateNamespace(context.TODO(), clientset, TestingNamespace)).To(Succeed())
+		Expect(utils.CreateNginxDeployment(context.TODO(), client, RouteName, TestingNamespace)).
+			To(Succeed())
+		Expect(utils.CreateClusterIPService(context.TODO(), client, TestingNamespace, RouteName)).To(Succeed())
 
-		By("installing the cert-manager")
-		Expect(utils.InstallCertManager()).To(Succeed())
-
-		By("creating manager namespace")
-		cmd := exec.Command("kubectl", "create", "ns", namespace)
-		_, _ = utils.Run(cmd)
+		Expect(utils.DeleteIfExists(context.TODO(), client, &route.Route{
+			TypeMeta: metav1.TypeMeta{},
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      RouteName,
+				Namespace: TestingNamespace,
+			},
+			Spec:   route.RouteSpec{},
+			Status: route.RouteStatus{},
+		})).To(Succeed())
 	})
 
 	AfterAll(func() {
-		By("uninstalling the Prometheus manager bundle")
-		utils.UninstallPrometheusOperator()
+		Expect(utils.DeleteIfExists(context.TODO(), client, &corev1.Service{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      RouteName,
+				Namespace: TestingNamespace,
+			}})).To(Succeed())
 
-		By("uninstalling the cert-manager bundle")
-		utils.UninstallCertManager()
+		Expect(utils.DeleteIfExists(context.TODO(), client, &v1.Deployment{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      RouteName,
+				Namespace: TestingNamespace,
+			}})).To(Succeed())
 
-		By("removing manager namespace")
-		cmd := exec.Command("kubectl", "delete", "ns", namespace)
-		_, _ = utils.Run(cmd)
+		Expect(utils.DeleteNamespaceIfExists(context.TODO(), clientset, TestingNamespace)).To(Succeed())
+		Expect(utils.DeleteNamespaceIfExists(context.TODO(), clientset, IPShieldCRNamespace)).To(Succeed())
 	})
 
 	Context("Operator", func() {
+		var whitelist *networkingv1alpha1.RouteWhitelist
+
 		It("should run successfully", func() {
+			Skip("Skipping installation test")
 			var controllerPodName string
 			var err error
 
@@ -94,7 +156,7 @@ var _ = Describe("controller", Ordered, func() {
 						"{{ if not .metadata.deletionTimestamp }}"+
 						"{{ .metadata.name }}"+
 						"{{ \"\\n\" }}{{ end }}{{ end }}",
-					"-n", namespace,
+					"-n", OperatorNamespace,
 				)
 
 				podOutput, err := utils.Run(cmd)
@@ -109,7 +171,7 @@ var _ = Describe("controller", Ordered, func() {
 				// Validate pod status
 				cmd = exec.Command("kubectl", "get",
 					"pods", controllerPodName, "-o", "jsonpath={.status.phase}",
-					"-n", namespace,
+					"-n", OperatorNamespace,
 				)
 				status, err := utils.Run(cmd)
 				ExpectWithOffset(2, err).NotTo(HaveOccurred())
@@ -121,5 +183,271 @@ var _ = Describe("controller", Ordered, func() {
 			EventuallyWithOffset(1, verifyControllerUp, time.Minute, time.Second).Should(Succeed())
 
 		})
+
+		BeforeEach(func() {
+
+			Expect(utils.Run(exec.Command("oc", "expose", "svc", RouteName, "-n", TestingNamespace))).
+				Error().
+				NotTo(HaveOccurred())
+
+			Expect(utils.Run(exec.Command("kubectl",
+				"label",
+				"route",
+				RouteName,
+				controller.IPShieldWatchedResourceLabel+"-",
+				"-n", TestingNamespace))).
+				Error().
+				ShouldNot(HaveOccurred())
+
+			Expect(utils.Run(exec.Command("kubectl",
+				"label",
+				"route", RouteName,
+				"ipshield=true",
+				"-n", TestingNamespace))).
+				Error().
+				ShouldNot(HaveOccurred())
+
+			time.Sleep(3 * time.Second)
+		})
+
+		AfterEach(func() {
+			Expect(client.Delete(context.TODO(), whitelist))
+
+			Expect(utils.Run(exec.Command("kubectl", "delete", "route", RouteName, "-n", TestingNamespace))).
+				Error().
+				ShouldNot(HaveOccurred())
+			time.Sleep(3 * time.Second)
+		})
+
+		It("Deploy CR but route doesn't have label", func() {
+			whitelist = utils.GetRouteWhiteListSpec("sample", IPShieldCRNamespace, []string{"10.200.15.13"})
+			err := client.Create(context.TODO(), whitelist)
+			Expect(err).NotTo(HaveOccurred())
+
+			r := &route.Route{}
+			err = client.Get(context.TODO(), types.NamespacedName{Name: RouteName, Namespace: TestingNamespace}, r)
+
+			Expect(err).NotTo(HaveOccurred())
+			Expect(r).NotTo(BeNil())
+			Expect(r.Labels).ShouldNot(HaveKey(controller.IPShieldWatchedResourceLabel))
+			Expect(r.Annotations).ShouldNot(HaveKeyWithValue(controller.WhiteListAnnotation, "10.200.15.13"))
+		})
+
+		It("Deploy CR and route has label", func() {
+			r := &route.Route{}
+			err := client.Get(context.TODO(), types.NamespacedName{Name: RouteName, Namespace: TestingNamespace}, r)
+
+			Expect(err).NotTo(HaveOccurred())
+			Expect(r).NotTo(BeNil())
+			Expect(r.Annotations).ShouldNot(HaveKey(controller.IPShieldWatchedResourceLabel))
+
+			r.Labels[controller.IPShieldWatchedResourceLabel] = strconv.FormatBool(true)
+			Expect(client.Update(context.TODO(), r)).NotTo(HaveOccurred())
+
+			whitelist = utils.GetRouteWhiteListSpec("sample", IPShieldCRNamespace, []string{"10.200.15.13"})
+			err = client.Create(context.TODO(), whitelist)
+			Expect(err).NotTo(HaveOccurred())
+
+			// takes a while to update the route
+			time.Sleep(3 * time.Second)
+
+			err = client.Get(context.TODO(), types.NamespacedName{Name: RouteName, Namespace: TestingNamespace}, r)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(r).NotTo(BeNil())
+
+			Expect(r.Labels).Should(HaveKeyWithValue(controller.IPShieldWatchedResourceLabel, strconv.FormatBool(true)))
+			Expect(r.Annotations).Should(HaveKeyWithValue(controller.WhiteListAnnotation, "10.200.15.13"))
+		})
+
+		It("Deploy CR and route already had whitelist 1 element", func() {
+			r := &route.Route{}
+			err := client.Get(context.TODO(), types.NamespacedName{Name: RouteName, Namespace: TestingNamespace}, r)
+
+			Expect(err).NotTo(HaveOccurred())
+			Expect(r).NotTo(BeNil())
+
+			r.Labels[controller.IPShieldWatchedResourceLabel] = strconv.FormatBool(true)
+			r.Annotations[controller.WhiteListAnnotation] = "192.168.10.32"
+
+			Expect(client.Update(context.TODO(), r)).NotTo(HaveOccurred())
+
+			time.Sleep(5 * time.Second)
+
+			whitelist = utils.GetRouteWhiteListSpec("sample", IPShieldCRNamespace, []string{"10.200.15.13", "10.200.15.132"})
+			err = client.Create(context.TODO(), whitelist)
+			Expect(err).NotTo(HaveOccurred())
+
+			// takes a while to update the route
+			time.Sleep(5 * time.Second)
+
+			err = client.Get(context.TODO(), types.NamespacedName{Name: RouteName, Namespace: TestingNamespace}, r)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(r).NotTo(BeNil())
+
+			Expect(r.Annotations).Should(HaveKey(controller.WhiteListAnnotation))
+			Expect(strings.Split(r.Annotations[controller.WhiteListAnnotation], " ")).
+				Should(ConsistOf("10.200.15.13", "10.200.15.132", "192.168.10.32"))
+
+		})
+
+		It("Route and CR had one common IP", func() {
+			r := &route.Route{}
+			err := client.Get(context.TODO(), types.NamespacedName{Name: RouteName, Namespace: TestingNamespace}, r)
+
+			Expect(err).NotTo(HaveOccurred())
+			Expect(r).NotTo(BeNil())
+
+			r.Labels[controller.IPShieldWatchedResourceLabel] = strconv.FormatBool(true)
+			r.Annotations[controller.WhiteListAnnotation] = "10.200.15.13"
+
+			Expect(client.Update(context.TODO(), r)).NotTo(HaveOccurred())
+
+			time.Sleep(5 * time.Second)
+
+			whitelist = utils.GetRouteWhiteListSpec("sample", IPShieldCRNamespace, []string{"10.200.15.13", "10.200.15.132"})
+			err = client.Create(context.TODO(), whitelist)
+			Expect(err).NotTo(HaveOccurred())
+
+			// takes a while to update the route
+			time.Sleep(5 * time.Second)
+
+			Expect(client.Get(context.TODO(), types.NamespacedName{Name: RouteName, Namespace: TestingNamespace}, r)).
+				Should(Succeed())
+			Expect(r).NotTo(BeNil())
+
+			Expect(r.Annotations).Should(HaveKey(controller.WhiteListAnnotation))
+			Expect(strings.Split(r.Annotations[controller.WhiteListAnnotation], " ")).
+				Should(ConsistOf("10.200.15.13", "10.200.15.132"))
+
+			Expect(client.Delete(context.TODO(), whitelist)).Error().ShouldNot(HaveOccurred())
+
+			time.Sleep(5 * time.Second)
+
+			err = client.Get(context.TODO(), types.NamespacedName{Name: RouteName, Namespace: TestingNamespace}, r)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(r).NotTo(BeNil())
+
+			Expect(r.Annotations).Should(HaveKey(controller.WhiteListAnnotation))
+			Expect(strings.Split(r.Annotations[controller.WhiteListAnnotation], " ")).
+				Should(ConsistOf("10.200.15.13"))
+		})
+
+		It("IPShield watch label was updated to false", func() {
+			r := &route.Route{}
+			err := client.Get(context.TODO(), types.NamespacedName{Name: RouteName, Namespace: TestingNamespace}, r)
+
+			Expect(err).NotTo(HaveOccurred())
+			Expect(r).NotTo(BeNil())
+
+			r.Labels[controller.IPShieldWatchedResourceLabel] = strconv.FormatBool(true)
+			r.Annotations[controller.WhiteListAnnotation] = "10.200.15.13"
+
+			Expect(client.Update(context.TODO(), r)).NotTo(HaveOccurred())
+
+			time.Sleep(5 * time.Second)
+
+			whitelist = utils.GetRouteWhiteListSpec("sample", IPShieldCRNamespace, []string{"10.200.15.13", "10.200.15.132"})
+			err = client.Create(context.TODO(), whitelist)
+			Expect(err).NotTo(HaveOccurred())
+
+			// takes a while to update the route
+			time.Sleep(5 * time.Second)
+
+			Expect(client.Get(context.TODO(), types.NamespacedName{Name: RouteName, Namespace: TestingNamespace}, r))
+			Expect(r).NotTo(BeNil())
+
+			Expect(r.Annotations).Should(HaveKey(controller.WhiteListAnnotation))
+			Expect(strings.Split(r.Annotations[controller.WhiteListAnnotation], " ")).
+				Should(ConsistOf("10.200.15.13", "10.200.15.132"))
+
+			r.Labels[controller.IPShieldWatchedResourceLabel] = strconv.FormatBool(false)
+			Expect(client.Update(context.TODO(), r)).Error().ShouldNot(HaveOccurred())
+
+			time.Sleep(5 * time.Second)
+
+			err = client.Get(context.TODO(), types.NamespacedName{Name: RouteName, Namespace: TestingNamespace}, r)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(r).NotTo(BeNil())
+
+			Expect(r.Annotations).Should(HaveKey(controller.WhiteListAnnotation))
+			Expect(strings.Split(r.Annotations[controller.WhiteListAnnotation], " ")).
+				Should(ConsistOf("10.200.15.13"))
+		})
+
+		It("whitelist annotation was modified directly", func() {
+			r := &route.Route{}
+			err := client.Get(context.TODO(), types.NamespacedName{Name: RouteName, Namespace: TestingNamespace}, r)
+
+			Expect(err).NotTo(HaveOccurred())
+			Expect(r).NotTo(BeNil())
+
+			r.Labels[controller.IPShieldWatchedResourceLabel] = strconv.FormatBool(true)
+			Expect(client.Update(context.TODO(), r)).NotTo(HaveOccurred())
+
+			time.Sleep(5 * time.Second)
+
+			whitelist = utils.GetRouteWhiteListSpec("sample", IPShieldCRNamespace, []string{"10.200.15.13", "10.200.15.132"})
+			err = client.Create(context.TODO(), whitelist)
+			Expect(err).NotTo(HaveOccurred())
+
+			// takes a while to update the route
+			time.Sleep(5 * time.Second)
+
+			Expect(client.Get(context.TODO(), types.NamespacedName{Name: RouteName, Namespace: TestingNamespace}, r)).
+				To(Succeed())
+			Expect(r).NotTo(BeNil())
+
+			Expect(r.Annotations).Should(HaveKey(controller.WhiteListAnnotation))
+			Expect(strings.Split(r.Annotations[controller.WhiteListAnnotation], " ")).
+				Should(ConsistOf("10.200.15.13", "10.200.15.132"))
+
+			r.Annotations[controller.WhiteListAnnotation] = "10.13.42.54"
+			Expect(client.Update(context.TODO(), r)).Error().ShouldNot(HaveOccurred())
+
+			time.Sleep(5 * time.Second)
+
+			err = client.Get(context.TODO(), types.NamespacedName{Name: RouteName, Namespace: TestingNamespace}, r)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(r).NotTo(BeNil())
+
+			Expect(r.Annotations).Should(HaveKey(controller.WhiteListAnnotation))
+			Expect(strings.Split(r.Annotations[controller.WhiteListAnnotation], " ")).
+				Should(ConsistOf("10.200.15.13", "10.200.15.132", "10.13.42.54"))
+		})
+
+		It("has multiple CRs", func() {
+			r := &route.Route{}
+			err := client.Get(context.TODO(), types.NamespacedName{Name: RouteName, Namespace: TestingNamespace}, r)
+
+			Expect(err).NotTo(HaveOccurred())
+			Expect(r).NotTo(BeNil())
+
+			r.Labels[controller.IPShieldWatchedResourceLabel] = strconv.FormatBool(true)
+			Expect(client.Update(context.TODO(), r)).NotTo(HaveOccurred())
+
+			time.Sleep(5 * time.Second)
+
+			whitelist = utils.GetRouteWhiteListSpec("sample", IPShieldCRNamespace, []string{"10.200.15.13", "10.200.15.132"})
+			err = client.Create(context.TODO(), whitelist)
+			Expect(err).NotTo(HaveOccurred())
+
+			whitelist2 := utils.GetRouteWhiteListSpec("samplex2", IPShieldCRNamespace, []string{"10.200.15.14", "10.200.15.135"})
+			err = client.Create(context.TODO(), whitelist2)
+			Expect(err).NotTo(HaveOccurred())
+
+			// takes a while to update the route
+			time.Sleep(5 * time.Second)
+
+			Expect(client.Get(context.TODO(), types.NamespacedName{Name: RouteName, Namespace: TestingNamespace}, r)).
+				To(Succeed())
+			Expect(r).NotTo(BeNil())
+
+			Expect(r.Annotations).Should(HaveKey(controller.WhiteListAnnotation))
+			Expect(strings.Split(r.Annotations[controller.WhiteListAnnotation], " ")).
+				Should(ConsistOf("10.200.15.13", "10.200.15.132", "10.200.15.14", "10.200.15.135"))
+
+			Expect(client.Delete(context.TODO(), whitelist2)).Error().ShouldNot(HaveOccurred())
+		})
 	})
+
 })

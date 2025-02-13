@@ -27,6 +27,6 @@ import (
 // Run e2e tests using the Ginkgo runner.
 func TestE2E(t *testing.T) {
 	RegisterFailHandler(Fail)
-	fmt.Fprintf(GinkgoWriter, "Starting ipshield-operator suite\n")
+	_, _ = fmt.Fprint(GinkgoWriter, "Starting ipshield-operator suite\n")
 	RunSpecs(t, "e2e suite")
 }
