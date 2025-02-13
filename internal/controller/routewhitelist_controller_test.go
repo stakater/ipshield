@@ -19,6 +19,8 @@ package controller
 import (
 	"context"
 	"fmt"
+	"strings"
+
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	v1 "github.com/openshift/api/route/v1"
@@ -30,7 +32,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	fakeclient "sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
-	"strings"
 
 	networkingv1alpha1 "github.com/stakater/ipshield-operator/api/v1alpha1"
 )
@@ -50,7 +51,7 @@ var _ = Describe("RouteWhitelist Controller", Ordered, func() {
 	BeforeEach(func() {
 		ctx = context.Background()
 		scheme := scheme2.Scheme
-		networkingv1alpha1.AddToScheme(scheme)
+		Expect(networkingv1alpha1.AddToScheme(scheme)).To(Succeed())
 
 		r = &unstructured.Unstructured{}
 		r.SetUnstructuredContent(map[string]interface{}{
@@ -135,9 +136,10 @@ var _ = Describe("RouteWhitelist Controller", Ordered, func() {
 
 		osRoute := &v1.Route{}
 		err := fakeClient.Get(ctx, types.NamespacedName{Namespace: r.GetNamespace(), Name: r.GetName()}, osRoute)
+		Expect(err).NotTo(HaveOccurred())
 
 		osRoute.Annotations[WhiteListAnnotation] = "10.33.52.5"
-		err = fakeClient.Update(ctx, osRoute)
+		Expect(fakeClient.Update(ctx, osRoute)).To(Succeed())
 
 		_, err = reconciler.Reconcile(ctx, reconcile.Request{
 			NamespacedName: types.NamespacedName{
@@ -165,12 +167,12 @@ var _ = Describe("RouteWhitelist Controller", Ordered, func() {
 		By("Reconciling the created resource")
 
 		osRoute := &v1.Route{}
-		err := fakeClient.Get(ctx, types.NamespacedName{Namespace: r.GetNamespace(), Name: r.GetName()}, osRoute)
+		Expect(fakeClient.Get(ctx, types.NamespacedName{Namespace: r.GetNamespace(), Name: r.GetName()}, osRoute)).To(Succeed())
 
 		osRoute.Annotations[WhiteListAnnotation] = "10.33.52.5"
-		err = fakeClient.Update(ctx, osRoute)
+		Expect(fakeClient.Update(ctx, osRoute)).Should(Succeed())
 
-		_, err = reconciler.Reconcile(ctx, reconcile.Request{
+		_, err := reconciler.Reconcile(ctx, reconcile.Request{
 			NamespacedName: types.NamespacedName{
 				Namespace: whitelist.Namespace,
 				Name:      whitelist.Name,
@@ -200,6 +202,8 @@ var _ = Describe("RouteWhitelist Controller", Ordered, func() {
 				Name:      whitelist.Name,
 			},
 		})
+
+		Expect(err).NotTo(HaveOccurred())
 
 		Expect(fakeClient.Get(ctx, types.NamespacedName{Namespace: r.GetNamespace(), Name: r.GetName()}, osRoute)).To(Succeed())
 		Expect(osRoute.Annotations).To(HaveKey(WhiteListAnnotation))

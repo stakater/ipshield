@@ -19,13 +19,14 @@ package utils
 import (
 	"context"
 	"fmt"
-	networkingv1alpha1 "github.com/stakater/ipshield-operator/api/v1alpha1"
 	"os"
 	"os/exec"
 	"strconv"
 	"strings"
 
 	. "github.com/onsi/ginkgo/v2" //nolint:golint,revive
+	networkingv1alpha1 "github.com/stakater/ipshield-operator/api/v1alpha1"
+	v1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -150,7 +151,8 @@ func GetProjectDir() (string, error) {
 	return wd, nil
 }
 
-func CreateIfNotExists(ctx context.Context, client client.Client, object client.Object, objName, objNamespace string) error {
+func CreateIfNotExists(ctx context.Context, client client.Client,
+	object client.Object, objName, objNamespace string) error {
 	err := client.Get(ctx, types.NamespacedName{Name: objName, Namespace: objNamespace}, object)
 	if err != nil {
 		if errors.IsNotFound(err) {
@@ -167,6 +169,14 @@ func CreateIfNotExists(ctx context.Context, client client.Client, object client.
 	return nil
 }
 
+func DeleteIfExists(ctx context.Context, client client.Client, object client.Object) error {
+	err := client.Delete(ctx, object)
+	if err != nil && !errors.IsNotFound(err) {
+		return err
+	}
+	return nil
+}
+
 func CreateNamespace(ctx context.Context, clientset *kubernetes.Clientset, name string) error {
 	ns := &corev1.Namespace{
 		ObjectMeta: metav1.ObjectMeta{Name: name},
@@ -178,6 +188,14 @@ func CreateNamespace(ctx context.Context, clientset *kubernetes.Clientset, name 
 	} else {
 		return err
 	}
+}
+
+func DeleteNamespaceIfExists(ctx context.Context, clientset *kubernetes.Clientset, name string) error {
+	err := clientset.CoreV1().Namespaces().Delete(ctx, name, metav1.DeleteOptions{})
+	if err != nil {
+		return err
+	}
+	return nil
 }
 
 // CreateClusterIPService Create ClusterIP Service
@@ -216,4 +234,39 @@ func GetRouteWhiteListSpec(name, ns string, ips []string) *networkingv1alpha1.Ro
 			IPRanges: ips,
 		},
 	}
+}
+
+func CreateNginxDeployment(ctx context.Context, client client.Client, name, namespace string) error {
+	replicas := int32(1)
+
+	deployment := &v1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: namespace,
+		},
+		Spec: v1.DeploymentSpec{
+			Replicas: &replicas,
+			Selector: &metav1.LabelSelector{
+				MatchLabels: map[string]string{"app": "nginx"},
+			},
+			Template: corev1.PodTemplateSpec{
+				ObjectMeta: metav1.ObjectMeta{
+					Labels: map[string]string{"app": "nginx"},
+				},
+				Spec: corev1.PodSpec{
+					Containers: []corev1.Container{
+						{
+							Name:  "nginx",
+							Image: "nginx:1.14.2",
+							Ports: []corev1.ContainerPort{{
+								ContainerPort: 80,
+							}},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	return CreateIfNotExists(ctx, client, deployment, name, namespace)
 }
