@@ -33,6 +33,7 @@ rules:
   resources:
   - routewhitelists/finalizers
   verbs:
+  - patch
   - update
 - apiGroups:
   - networking.stakater.com
@@ -49,5 +50,6 @@ rules:
   verbs:
   - get
   - list
+  - patch
   - update
   - watch
