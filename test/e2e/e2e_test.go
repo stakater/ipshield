@@ -332,7 +332,7 @@ var _ = Describe("controller", Ordered, func() {
 				Should(ConsistOf("10.200.15.13"))
 		})
 
-		It("IPShield watch label was updated to false", func() {
+		It("IPShield watch label was updated to false when route initially had pre populated whitelist", func() {
 			r := &route.Route{}
 			err := client.Get(context.TODO(), types.NamespacedName{Name: RouteName, Namespace: TestingNamespace}, r)
 
@@ -372,6 +372,45 @@ var _ = Describe("controller", Ordered, func() {
 			Expect(r.Annotations).Should(HaveKey(controller.WhiteListAnnotation))
 			Expect(strings.Split(r.Annotations[controller.WhiteListAnnotation], " ")).
 				Should(ConsistOf("10.200.15.13"))
+		})
+
+		It("IPShield watch label was updated to false when route initially had empty whitelist", func() {
+			r := &route.Route{}
+			err := client.Get(context.TODO(), types.NamespacedName{Name: RouteName, Namespace: TestingNamespace}, r)
+
+			Expect(err).NotTo(HaveOccurred())
+			Expect(r).NotTo(BeNil())
+
+			r.Labels[controller.IPShieldWatchedResourceLabel] = strconv.FormatBool(true)
+
+			Expect(client.Update(context.TODO(), r)).NotTo(HaveOccurred())
+
+			time.Sleep(5 * time.Second)
+
+			whitelist = utils.GetRouteWhiteListSpec("sample", IPShieldCRNamespace, []string{"10.200.15.13", "10.200.15.132"})
+			err = client.Create(context.TODO(), whitelist)
+			Expect(err).NotTo(HaveOccurred())
+
+			// takes a while to update the route
+			time.Sleep(5 * time.Second)
+
+			Expect(client.Get(context.TODO(), types.NamespacedName{Name: RouteName, Namespace: TestingNamespace}, r))
+			Expect(r).NotTo(BeNil())
+
+			Expect(r.Annotations).Should(HaveKey(controller.WhiteListAnnotation))
+			Expect(strings.Split(r.Annotations[controller.WhiteListAnnotation], " ")).
+				Should(ConsistOf("10.200.15.13", "10.200.15.132"))
+
+			r.Labels[controller.IPShieldWatchedResourceLabel] = strconv.FormatBool(false)
+			Expect(client.Update(context.TODO(), r)).Error().ShouldNot(HaveOccurred())
+
+			time.Sleep(5 * time.Second)
+
+			err = client.Get(context.TODO(), types.NamespacedName{Name: RouteName, Namespace: TestingNamespace}, r)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(r).NotTo(BeNil())
+
+			Expect(r.Annotations).ShouldNot(HaveKey(controller.WhiteListAnnotation))
 		})
 
 		It("whitelist annotation was modified directly", func() {

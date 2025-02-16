@@ -115,10 +115,6 @@ func (r *RouteWhitelistReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 	logger := log.FromContext(ctx).WithName("ipShield-controller")
 	logger.Info("Reconciling IPShield")
 
-	if req.Name == "" && req.Namespace == "" {
-		return ctrl.Result{}, nil
-	}
-
 	cr := &networkingv1alpha1.RouteWhitelist{}
 	err := r.Get(ctx, req.NamespacedName, cr)
 	if err != nil {
@@ -232,9 +228,9 @@ func (r *RouteWhitelistReconciler) updateConfigMap(ctx context.Context, watchedR
 		configMap.Data = make(map[string]string)
 	}
 
-	if originalWhitelist, ok := watchedRoute.Annotations[WhiteListAnnotation]; ok && originalWhitelist != "" {
-		configMap.Data[routeFullName] = originalWhitelist
-	}
+	originalWhitelist, _ := watchedRoute.Annotations[WhiteListAnnotation]
+
+	configMap.Data[routeFullName] = originalWhitelist
 
 	return r.Patch(ctx, configMap, patchBase)
 }
@@ -399,14 +395,13 @@ func (r *RouteWhitelistReconciler) mapRouteToRouteWhiteList(ctx context.Context,
 	}
 
 	result := make([]reconcile.Request, len(whitelists.Items))
-	for _, crd := range whitelists.Items {
-
-		result = append(result, reconcile.Request{
+	for i, crd := range whitelists.Items {
+		result[i] = reconcile.Request{
 			NamespacedName: types.NamespacedName{
 				Name:      crd.Name,
 				Namespace: crd.Namespace,
 			},
-		})
+		}
 	}
 
 	return result
