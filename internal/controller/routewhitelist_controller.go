@@ -228,8 +228,7 @@ func (r *RouteWhitelistReconciler) updateConfigMap(ctx context.Context, watchedR
 		configMap.Data = make(map[string]string)
 	}
 
-	originalWhitelist, _ := watchedRoute.Annotations[WhiteListAnnotation]
-
+	originalWhitelist := watchedRoute.Annotations[WhiteListAnnotation]
 	configMap.Data[routeFullName] = originalWhitelist
 
 	return r.Patch(ctx, configMap, patchBase)
