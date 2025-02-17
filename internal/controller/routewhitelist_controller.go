@@ -243,6 +243,8 @@ func (r *RouteWhitelistReconciler) handleDelete(ctx context.Context, routes *rou
 	if err != nil {
 		setWarning(&cr.Status.Conditions, "ConfigMapFetchFailure", fmt.Errorf("failed to get config map %s", err))
 		return r.patchErrorStatus(ctx, cr, patch, err)
+	} else {
+		apimeta.RemoveStatusCondition(&cr.Status.Conditions, "ConfigMapFetchFailure")
 	}
 
 	for _, watchedRoute := range routes.Items {
@@ -250,6 +252,8 @@ func (r *RouteWhitelistReconciler) handleDelete(ctx context.Context, routes *rou
 		if err = r.unwatchRoute(ctx, watchedRoute, routePatch, cr, configMap, logger); err != nil {
 			setFailed(&cr.Status.Conditions, "RouteDeleteFailure", err)
 			return r.patchErrorStatus(ctx, cr, patch, err)
+		} else {
+			apimeta.RemoveStatusCondition(&cr.Status.Conditions, "RouteDeleteFailure")
 		}
 	}
 
