@@ -107,17 +107,13 @@ func (r *RouteWhitelistReconciler) patchResourceAndStatus(ctx context.Context, o
 
 //+kubebuilder:rbac:groups=networking.stakater.com,resources=routewhitelists,verbs=get;list;watch;create;update;patch;delete
 //+kubebuilder:rbac:groups=networking.stakater.com,resources=routewhitelists/status,verbs=get;update;patch
-//+kubebuilder:rbac:groups=networking.stakater.com,resources=routewhitelists/finalizers,verbs=update
-//+kubebuilder:rbac:groups=route.openshift.io,resources=routes,verbs=get;list;watch;update
+//+kubebuilder:rbac:groups=networking.stakater.com,resources=routewhitelists/finalizers,verbs=update;patch
+//+kubebuilder:rbac:groups=route.openshift.io,resources=routes,verbs=get;list;watch;update;patch
 //+kubebuilder:rbac:groups=core,resources=configmaps,verbs=get;list;watch;create;update;patch;delete
 
 func (r *RouteWhitelistReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	logger := log.FromContext(ctx).WithName("ipShield-controller")
 	logger.Info("Reconciling IPShield")
-
-	if req.Name == "" && req.Namespace == "" {
-		return ctrl.Result{}, nil
-	}
 
 	cr := &networkingv1alpha1.RouteWhitelist{}
 	err := r.Get(ctx, req.NamespacedName, cr)
@@ -232,9 +228,8 @@ func (r *RouteWhitelistReconciler) updateConfigMap(ctx context.Context, watchedR
 		configMap.Data = make(map[string]string)
 	}
 
-	if originalWhitelist, ok := watchedRoute.Annotations[WhiteListAnnotation]; ok && originalWhitelist != "" {
-		configMap.Data[routeFullName] = originalWhitelist
-	}
+	originalWhitelist := watchedRoute.Annotations[WhiteListAnnotation]
+	configMap.Data[routeFullName] = originalWhitelist
 
 	return r.Patch(ctx, configMap, patchBase)
 }
@@ -248,6 +243,8 @@ func (r *RouteWhitelistReconciler) handleDelete(ctx context.Context, routes *rou
 	if err != nil {
 		setWarning(&cr.Status.Conditions, "ConfigMapFetchFailure", fmt.Errorf("failed to get config map %s", err))
 		return r.patchErrorStatus(ctx, cr, patch, err)
+	} else {
+		apimeta.RemoveStatusCondition(&cr.Status.Conditions, "ConfigMapFetchFailure")
 	}
 
 	for _, watchedRoute := range routes.Items {
@@ -255,6 +252,8 @@ func (r *RouteWhitelistReconciler) handleDelete(ctx context.Context, routes *rou
 		if err = r.unwatchRoute(ctx, watchedRoute, routePatch, cr, configMap, logger); err != nil {
 			setFailed(&cr.Status.Conditions, "RouteDeleteFailure", err)
 			return r.patchErrorStatus(ctx, cr, patch, err)
+		} else {
+			apimeta.RemoveStatusCondition(&cr.Status.Conditions, "RouteDeleteFailure")
 		}
 	}
 
@@ -399,14 +398,13 @@ func (r *RouteWhitelistReconciler) mapRouteToRouteWhiteList(ctx context.Context,
 	}
 
 	result := make([]reconcile.Request, len(whitelists.Items))
-	for _, crd := range whitelists.Items {
-
-		result = append(result, reconcile.Request{
+	for i, crd := range whitelists.Items {
+		result[i] = reconcile.Request{
 			NamespacedName: types.NamespacedName{
 				Name:      crd.Name,
 				Namespace: crd.Namespace,
 			},
-		})
+		}
 	}
 
 	return result

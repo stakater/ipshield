@@ -130,7 +130,7 @@ var _ = Describe("RouteWhitelist Controller", Ordered, func() {
 
 		watchedRoutes := &corev1.ConfigMap{}
 		Expect(fakeClient.Get(ctx, types.NamespacedName{Namespace: DefaultWatchNamespace, Name: WatchedRoutesConfigMapName}, watchedRoutes)).Should(Succeed())
-		Expect(watchedRoutes.Data).To(BeEmpty())
+		Expect(watchedRoutes.Data).To(HaveKey(fmt.Sprintf("%s__%s", osRoute.Namespace, osRoute.Name)))
 		ok, err := controllerutil.HasOwnerReference(watchedRoutes.OwnerReferences, whitelist, scheme2.Scheme)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(ok).To(BeTrue())
