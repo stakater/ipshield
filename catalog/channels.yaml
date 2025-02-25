@@ -2,13 +2,6 @@ schema: olm.channel
 package: ipshield-operator
 name: preview
 entries:
-  - name: ipshield-operator.v0.0.1
-  - name: ipshield-operator.v0.0.2
-    replaces: ipshield-operator.v0.0.1
-  - name: ipshield-operator.v0.0.3
-    replaces: ipshield-operator.v0.0.2
-  - name: ipshield-operator.v0.0.4
-    replaces: ipshield-operator.v0.0.3
   - name: ipshield-operator.v0.0.5
     skips:
     - ipshield-operator.v0.0.1
@@ -16,3 +9,10 @@ entries:
     - ipshield-operator.v0.0.3
     - ipshield-operator.v0.0.4
 
+  - name: ipshield-operator.v0.0.4
+    replaces: ipshield-operator.v0.0.3
+  - name: ipshield-operator.v0.0.3
+    replaces: ipshield-operator.v0.0.2
+  - name: ipshield-operator.v0.0.2
+    replaces: ipshield-operator.v0.0.1
+  - name: ipshield-operator.v0.0.1
