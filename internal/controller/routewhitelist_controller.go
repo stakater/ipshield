@@ -25,7 +25,6 @@ import (
 	"github.com/go-logr/logr"
 	route "github.com/openshift/api/route/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
-	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -129,11 +128,17 @@ func (r *RouteWhitelistReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 	apimeta.RemoveStatusCondition(&cr.Status.Conditions, "Updating")
 	setCondition(&cr.Status.Conditions, "WhiteListReconciling", "True", "ProcessingWhitelist", "Searching for routes")
 
+	selector, err := metav1.LabelSelectorAsSelector(cr.Spec.LabelSelector)
+	if err != nil {
+		logger.Error(err, "failed to parse label selector")
+		return ctrl.Result{}, err
+	}
+
 	// Get routes
 	routes := &route.RouteList{}
 
 	err = r.List(ctx, routes, &client.ListOptions{
-		LabelSelector: labels.SelectorFromSet(cr.Spec.LabelSelector.MatchLabels),
+		LabelSelector: selector,
 	})
 
 	if err != nil {
