@@ -5,7 +5,7 @@ entries:
   - name: ipshield-operator.v0.0.5
     skips:
     - ipshield-operator.v0.0.1
-    - ipsheild-operator.v0.0.2
+    - ipshield-operator.v0.0.2
     - ipshield-operator.v0.0.3
     - ipshield-operator.v0.0.4
 
