@@ -54,8 +54,9 @@ const (
 
 type RouteWhitelistReconciler struct {
 	client.Client
-	Scheme         *runtime.Scheme
-	WatchNamespace string
+	Scheme             *runtime.Scheme
+	WatchNamespace     string
+	WatchResourceLabel string
 }
 
 func setCondition(conditions *[]metav1.Condition, conditionType, status, reason, message string) {
@@ -80,15 +81,19 @@ func setWarning(conditions *[]metav1.Condition, reconcileType string, err error)
 	setCondition(conditions, reconcileType, string(metav1.ConditionFalse), "ReconcileWarning", fmt.Errorf("an error occurred %s", err).Error())
 }
 
-func GetWatchNamespace() string {
-	var watchNamespaceEnvVar = "WATCH_NAMESPACE"
-
-	ns, found := os.LookupEnv(watchNamespaceEnvVar)
-	if !found {
-		// fallback to default
-		ns = DefaultWatchNamespace
+func getEnv(key, defaultValue string) string {
+	if value, exists := os.LookupEnv(key); exists {
+		return value
 	}
-	return ns
+	return defaultValue
+}
+
+func GetWatchNamespace() string {
+	return getEnv("WATCH_NAMESPACE", DefaultWatchNamespace)
+}
+
+func GetWatchResourceLabel() string {
+	return getEnv("WATCH_RESOURCE_LABEL", IPShieldWatchedResourceLabel)
 }
 
 func (r *RouteWhitelistReconciler) patchResourceAndStatus(ctx context.Context, obj client.Object, patch client.Patch, logger logr.Logger) error {
@@ -180,7 +185,7 @@ func (r *RouteWhitelistReconciler) handleUpdate(ctx context.Context, routes *rou
 		apimeta.RemoveStatusCondition(&cr.Status.Conditions, "Updating") // removing previous route condition
 		setCondition(&cr.Status.Conditions, "Updating", "True", "UpdatingRoute", fmt.Sprintf("Updating route '%s'", watchedRoute.Name))
 
-		if val, ok := watchedRoute.Labels[IPShieldWatchedResourceLabel]; !ok || val != "true" {
+		if val, ok := watchedRoute.Labels[r.WatchResourceLabel]; !ok || val != "true" {
 			err = r.unwatchRoute(ctx, watchedRoute, client.MergeFrom(watchedRoute.DeepCopy()), cr, configMap, logger)
 
 			if err != nil {
@@ -386,7 +391,7 @@ func (r *RouteWhitelistReconciler) mapRouteToRouteWhiteList(ctx context.Context,
 	logger := log.FromContext(ctx).WithName("mapRouteToRouteWhiteList")
 	openshiftRoute := obj.(*route.Route)
 
-	if val, ok := openshiftRoute.Labels[IPShieldWatchedResourceLabel]; !ok || val != "true" {
+	if val, ok := openshiftRoute.Labels[r.WatchResourceLabel]; !ok || val != "true" {
 		return nil
 	}
 
