@@ -2,6 +2,9 @@ schema: olm.channel
 package: ipshield-operator
 name: preview
 entries:
+  - name: ipshield-operator.v.0.0.6
+    skipRange: ">=0.0.1 <0.0.6"
+    
   - name: ipshield-operator.v0.0.5
     skips:
     - ipshield-operator.v0.0.1
